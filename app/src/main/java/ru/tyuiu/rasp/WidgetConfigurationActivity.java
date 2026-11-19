@@ -11,6 +11,7 @@ import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextWatcher;
+import android.util.SizeF;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -39,7 +40,7 @@ public final class WidgetConfigurationActivity extends Activity {
     private ScheduleStore store;
     private ThemePalette palette;
     private int id;
-    private int height;
+    private SizeF previewSize;
     private List<String> subgroups;
     private final List<String> themes = new ArrayList<>();
     private Spinner mode, subgroup, theme, textSize, lines;
@@ -65,7 +66,10 @@ public final class WidgetConfigurationActivity extends Activity {
         Widgets.Kind fallback = Widgets.providerFor(this, id);
         if (fallback == null) { finish(); return; }
         var manager = AppWidgetManager.getInstance(this);
-        height = manager.getAppWidgetOptions(id).getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
+        SizeF widgetSize = Widgets.sizes(manager.getAppWidgetOptions(id), fallback).get(0);
+        var metrics = getResources().getDisplayMetrics();
+        previewSize = new SizeF(Math.min(widgetSize.getWidth(), Math.max(1, metrics.widthPixels / metrics.density - 40)),
+                widgetSize.getHeight());
         var initial = state == null ? WidgetOptions.load(this, id, fallback)
                 : WidgetOptions.decode(state.getString("draft", "{}"), fallback);
         getWindow().setDecorFitsSystemWindows(false);
@@ -107,7 +111,9 @@ public final class WidgetConfigurationActivity extends Activity {
         add(label("Предпросмотр", 14, true), 14);
         preview = new FrameLayout(this);
         preview.setBackground(shape(palette.control));
-        preview.setLayoutParams(new LinearLayout.LayoutParams(-1, dp(Math.max(100, Math.min(260, height > 0 ? height : fallback.height)))));
+        var frame = new LinearLayout.LayoutParams(dp(previewSize.getWidth()), dp(previewSize.getHeight()));
+        frame.gravity = Gravity.CENTER_HORIZONTAL;
+        preview.setLayoutParams(frame);
         form.addView(preview);
 
         section("Расписание");
@@ -134,7 +140,7 @@ public final class WidgetConfigurationActivity extends Activity {
         textSize = picker("Размер текста", List.of("Мелкий", "Обычный", "Крупный"), initial.textSize() + 1);
         int rowChoice = 0;
         for (int i = 0; i < ROWS.length; i++) if (ROWS[i] == initial.lines()) rowChoice = i;
-        lines = picker("Строки расписания", List.of("По высоте виджета", "2 строки", "4 строки", "6 строк", "8 строк"), rowChoice);
+        lines = picker("Записей в виджете", List.of("По размеру виджета", "До 2", "До 4", "До 6", "До 8"), rowChoice);
         opacityTitle = label("", 15, false);
         add(opacityTitle, 9);
         opacity = new SeekBar(this);
@@ -194,7 +200,7 @@ public final class WidgetConfigurationActivity extends Activity {
         opacityTitle.setText(getString(R.string.widget_opacity, current.opacity()));
         var schedule = store.read();
         if (schedule.group.isEmpty()) schedule = Schedule.example();
-        var sample = Widgets.make(this, store, schedule, Instant.now(), AppWidgetManager.INVALID_APPWIDGET_ID, current, height);
+        var sample = Widgets.make(this, store, schedule, Instant.now(), AppWidgetManager.INVALID_APPWIDGET_ID, current, previewSize);
         preview.removeAllViews();
         preview.addView(sample.apply(this, preview));
     }
@@ -288,5 +294,5 @@ public final class WidgetConfigurationActivity extends Activity {
         return style;
     }
 
-    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+    private int dp(float value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 }

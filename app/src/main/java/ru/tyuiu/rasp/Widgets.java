@@ -5,7 +5,9 @@ import android.appwidget.AppWidgetProvider;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.os.Bundle;
 import android.os.SystemClock;
+import android.util.SizeF;
 import android.util.TypedValue;
 import android.view.View;
 import android.widget.RemoteViews;
@@ -15,27 +17,28 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 final class Widgets {
     enum Kind {
-        NEXT(NextWidget.class, R.string.widget_next, 85),
-        DAY(DayWidget.class, R.string.widget_day, 115),
-        TODAY(null, R.string.widget_today, 115),
-        TOMORROW(TomorrowWidget.class, R.string.widget_tomorrow, 115),
-        WEEK(WeekWidget.class, R.string.widget_week, 195),
-        PROGRESS(ProgressWidget.class, R.string.widget_progress, 85);
+        NEXT(NextWidget.class, R.string.widget_next, 140, 85),
+        DAY(DayWidget.class, R.string.widget_day, 200, 115),
+        TODAY(null, R.string.widget_today, 200, 115),
+        TOMORROW(TomorrowWidget.class, R.string.widget_tomorrow, 200, 115),
+        WEEK(WeekWidget.class, R.string.widget_week, 200, 195),
+        PROGRESS(ProgressWidget.class, R.string.widget_progress, 140, 85);
 
         final Class<? extends AppWidgetProvider> provider;
         final int title;
-        final int height;
+        final SizeF size;
 
-        Kind(Class<? extends AppWidgetProvider> provider, int title, int height) {
+        Kind(Class<? extends AppWidgetProvider> provider, int title, int width, int height) {
             this.provider = provider;
             this.title = title;
-            this.height = height;
+            this.size = new SizeF(width, height);
         }
 
         static List<Kind> providers() {
@@ -79,8 +82,8 @@ final class Widgets {
         var progress = new HashSet<String>();
         for (Instance item : installed(context)) {
             var options = WidgetOptions.load(context, item.id(), item.kind());
-            int height = manager.getAppWidgetOptions(item.id()).getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
-            manager.updateAppWidget(item.id(), make(context, store, schedule, now, item.id(), options, height));
+            List<SizeF> sizes = sizes(manager.getAppWidgetOptions(item.id()), item.kind());
+            manager.updateAppWidget(item.id(), renderSizes(context, store, schedule, now, item.id(), options, sizes));
             String subgroup = options.subgroup(schedule, store);
             groups.add(subgroup);
             if (options.kind() == Kind.DAY || options.kind() == Kind.WEEK) rolling.add(subgroup);
@@ -89,23 +92,43 @@ final class Widgets {
         return new Active(groups, rolling, progress);
     }
 
+    static List<SizeF> sizes(Bundle information, Kind fallback) {
+        var exact = information.getParcelableArrayList(AppWidgetManager.OPTION_APPWIDGET_SIZES, SizeF.class);
+        if (exact != null) {
+            var valid = exact.stream().filter(size -> size != null && size.getWidth() > 0 && size.getHeight() > 0)
+                    .distinct().limit(16).collect(Collectors.toList());
+            if (!valid.isEmpty()) return valid;
+        }
+        int width = information.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0);
+        int height = information.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
+        return List.of(new SizeF(width > 0 ? width : fallback.size.getWidth(),
+                height > 0 ? height : fallback.size.getHeight()));
+    }
+
+    static RemoteViews renderSizes(Context context, ScheduleStore store, Schedule schedule, Instant now,
+                                   int id, WidgetOptions options, List<SizeF> sizes) {
+        if (sizes.size() == 1) return make(context, store, schedule, now, id, options, sizes.get(0));
+        var layouts = new LinkedHashMap<SizeF, RemoteViews>();
+        for (SizeF size : sizes) layouts.put(size, make(context, store, schedule, now, id, options, size));
+        return new RemoteViews(layouts);
+    }
+
     static RemoteViews make(Context context, ScheduleStore store, Schedule schedule, Instant now,
-                            int id, WidgetOptions options, int availableHeight) {
+                            int id, WidgetOptions options, SizeF size) {
         var view = new RemoteViews(context.getPackageName(), R.layout.widget_card);
         ThemePalette palette = ThemePalette.resolve(context, WidgetOptions.FOLLOW_THEME.equals(options.theme())
                 ? store.theme() : options.theme());
         int background = (options.opacity() * 255 / 100) << 24 | palette.card & 0x00ffffff;
         view.setColorStateList(R.id.widget_root, "setBackgroundTintList", ColorStateList.valueOf(background));
-        int padding = Math.round((options.compact() ? 9 : 14) * context.getResources().getDisplayMetrics().density);
+        boolean small = size.getHeight() < 105;
+        int padding = Math.round((options.compact() || small ? 9 : 14) * context.getResources().getDisplayMetrics().density);
         view.setViewPadding(R.id.widget_root, padding, padding, padding, padding);
         int font = options.textSize();
         view.setTextViewTextSize(R.id.widget_label, TypedValue.COMPLEX_UNIT_SP, 11 + font * 2);
         view.setTextViewTextSize(R.id.widget_title, TypedValue.COMPLEX_UNIT_SP, 17 + font * 3);
-        view.setTextViewTextSize(R.id.widget_details, TypedValue.COMPLEX_UNIT_SP, 13 + font * 2);
         view.setTextViewTextSize(R.id.widget_countdown, TypedValue.COMPLEX_UNIT_SP, 15 + font * 2);
         view.setTextColor(R.id.widget_label, palette.accent);
         view.setTextColor(R.id.widget_title, palette.text);
-        view.setTextColor(R.id.widget_details, palette.muted);
         view.setTextColor(R.id.widget_countdown, palette.accent);
         view.setViewVisibility(R.id.widget_label, options.has(WidgetOptions.HEADER) ? View.VISIBLE : View.GONE);
         view.setViewVisibility(R.id.widget_progress, View.GONE);
@@ -127,20 +150,20 @@ final class Widgets {
             case WEEK -> "БЛИЖАЙШИЕ 7 ДНЕЙ";
             case PROGRESS -> "ПРОГРЕСС ПАРЫ";
         };
-        int height = availableHeight > 0 ? availableHeight : kind.height;
-        int lines = options.lines() > 0 ? options.lines()
-                : Math.max(1, Math.min(8, (height - (options.compact() ? 38 : 51)) / (14 + font * 2)));
-        if (kind == Kind.WEEK && !options.has(WidgetOptions.WEEK_CLASSES)) lines = Math.min(7, lines);
+        boolean agenda = kind != Kind.NEXT && kind != Kind.PROGRESS;
+        view.setInt(R.id.widget_title, "setMaxLines", agenda || small ? 1 : 2);
         String title = "Выберите группу";
+        String timing = "";
         String info = "Открыть Пары ТИУ";
+        String teacher = "";
         if (!schedule.group.isEmpty()) {
             String group = options.has(WidgetOptions.GROUP) ? schedule.group : "";
             if (kind == Kind.WEEK) {
                 title = group.isEmpty() ? target.format(Schedule.DATE) + " — " + target.plusDays(6).format(Schedule.DATE) : group;
-                info = summarize(weekLines(schedule, target, subgroup, options), lines, options.compact());
+                info = "";
             } else if (kind == Kind.DAY || kind == Kind.TODAY || kind == Kind.TOMORROW) {
                 title = join(" · ", target.format(Schedule.DATE), group);
-                info = summarize(dayLines(schedule.day(target, subgroup), options), lines, options.compact());
+                info = "";
             } else {
                 Schedule.Lesson lesson = schedule.next(now, subgroup);
                 boolean active = lesson != null && !lesson.starts().isAfter(now);
@@ -149,13 +172,15 @@ final class Widgets {
                 if (lesson != null) {
                     target = lesson.start().toLocalDate();
                     title = lesson.title();
-                    info = join(" · ", target.equals(today) ? "" : target.format(Schedule.DATE),
-                            options.has(WidgetOptions.TIME) ? lesson.time() : "", metadata(lesson, options));
+                    timing = join(" · ", target.equals(today) ? "" : target.format(Schedule.DATE),
+                            options.has(WidgetOptions.TIME) ? lesson.time() : "");
+                    info = WidgetAgenda.details(lesson, options);
+                    if (!small || info.isEmpty()) teacher = WidgetAgenda.teacher(lesson, options);
                     if (active) {
                         label = "СЕЙЧАС ИДЁТ";
                         if (kind == Kind.PROGRESS) {
                             int percent = lesson.progress(now);
-                            info = join(" · ", percent + "%", info);
+                            timing = join(" · ", timing, percent + "%");
                             view.setViewVisibility(R.id.widget_progress, View.VISIBLE);
                             view.setColorStateList(R.id.widget_progress, "setProgressTintList", ColorStateList.valueOf(palette.accent));
                             view.setProgressBar(R.id.widget_progress, 100, percent, false);
@@ -179,59 +204,55 @@ final class Widgets {
         }
         view.setTextViewText(R.id.widget_label, options.title().isBlank() ? label : options.title());
         view.setTextViewText(R.id.widget_title, title);
-        view.setTextViewText(R.id.widget_details, info);
-        view.setViewVisibility(R.id.widget_details, info.isEmpty() ? View.GONE : View.VISIBLE);
-        view.setInt(R.id.widget_details, "setMaxLines", lines);
+        optionalText(view, R.id.widget_time, timing, 12 + font, palette.accent);
+        optionalText(view, R.id.widget_details, info, 12 + font, palette.muted);
+        optionalText(view, R.id.widget_teacher, WidgetAgenda.shortTeacher(teacher), 11 + font, palette.muted);
+        if (!teacher.isEmpty()) view.setContentDescription(R.id.widget_teacher, teacher);
+        if (agenda && !schedule.group.isEmpty()) {
+            WidgetAgenda.show(context, view, options, palette, schedule, target, subgroup, size);
+        } else if (!agenda && !schedule.group.isEmpty()) {
+            fitSingleLesson(context, view, size);
+        }
         return view;
     }
 
-    private static List<String> weekLines(Schedule schedule, LocalDate first, String subgroup, WidgetOptions options) {
-        var lines = new ArrayList<String>();
-        for (int i = 0; i < 7; i++) {
-            var date = first.plusDays(i);
-            var lessons = schedule.day(date, subgroup);
-            if (options.has(WidgetOptions.WEEK_CLASSES) && !lessons.isEmpty()) {
-                lines.add(date.format(Schedule.DATE));
-                lines.addAll(dayLines(lessons, options));
-            } else {
-                String detail = lessons.isEmpty() ? "пар нет" : options.has(WidgetOptions.TIME)
-                        ? "с " + lessons.get(0).start().format(Schedule.TIME) : lessons.get(0).title();
-                lines.add(join("  ·  ", date.format(Schedule.DATE), detail));
-            }
+    private static void fitSingleLesson(Context context, RemoteViews widget, SizeF size) {
+        var metrics = context.getResources().getDisplayMetrics();
+        int width = Math.round(size.getWidth() * metrics.density);
+        int height = Math.round(size.getHeight() * metrics.density);
+        View sample = widget.apply(context, null);
+        for (int field : new int[]{R.id.widget_teacher, R.id.widget_details, R.id.widget_time}) {
+            if (measure(sample, width) <= height) return;
+            View extra = sample.findViewById(field);
+            if (extra.getVisibility() != View.VISIBLE) continue;
+            extra.setVisibility(View.GONE);
+            widget.setViewVisibility(field, View.GONE);
         }
-        return lines;
+        if (measure(sample, width) <= height) return;
+        int inset = Math.round(5 * metrics.density);
+        sample.setPadding(sample.getPaddingLeft(), inset, sample.getPaddingRight(), inset);
+        widget.setViewPadding(R.id.widget_root, sample.getPaddingLeft(), inset, sample.getPaddingRight(), inset);
+        if (measure(sample, width) > height) widget.setViewVisibility(R.id.widget_label, View.GONE);
     }
 
-    private static List<String> dayLines(List<Schedule.Lesson> lessons, WidgetOptions options) {
-        if (lessons.isEmpty()) return List.of("Пар нет");
-        var lines = new ArrayList<String>();
-        Instant end = null;
-        for (var slot : Schedule.slots(lessons)) {
-            var first = slot.get(0);
-            long gap = end == null ? 0 : Duration.between(end, first.starts()).toMinutes();
-            if (gap > 0 && options.has(WidgetOptions.GAPS)) lines.add("Окно · " + gap + " мин");
-            String subjects = slot.stream().map(lesson -> join(" · ", lesson.title(), metadata(lesson, options)))
-                    .distinct().collect(Collectors.joining(" / "));
-            lines.add(join("  ", options.has(WidgetOptions.TIME) ? first.start().format(Schedule.TIME) : "", subjects));
-            if (end == null || first.ends().isAfter(end)) end = first.ends();
-        }
-        return lines;
+    static int measure(View view, int width) {
+        view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return view.getMeasuredHeight();
     }
 
-    private static String metadata(Schedule.Lesson lesson, WidgetOptions options) {
-        return join(" · ", options.has(WidgetOptions.TYPE) ? lesson.type() : "",
-                options.has(WidgetOptions.ROOM) ? lesson.room() : "", options.has(WidgetOptions.TEACHER) ? lesson.teacher() : "");
+    static void optionalText(RemoteViews view, int id, String value, int size, int color) {
+        view.setViewVisibility(id, value.isBlank() ? View.GONE : View.VISIBLE);
+        text(view, id, value, size, color);
     }
 
-    private static String summarize(List<String> rows, int lines, boolean compact) {
-        var visible = new ArrayList<>(rows.subList(0, Math.min(rows.size(), lines)));
-        if (rows.size() > lines && lines > 1) {
-            visible.set(lines - 1, compact ? "…" : "Ещё " + (rows.size() - lines + 1));
-        }
-        return String.join("\n", visible);
+    static void text(RemoteViews view, int id, String value, int size, int color) {
+        view.setTextViewText(id, value);
+        view.setTextViewTextSize(id, TypedValue.COMPLEX_UNIT_SP, size);
+        view.setTextColor(id, color);
     }
 
-    private static String join(String separator, String... values) {
+    static String join(String separator, String... values) {
         return java.util.Arrays.stream(values).filter(value -> !value.isBlank()).collect(Collectors.joining(separator));
     }
 }

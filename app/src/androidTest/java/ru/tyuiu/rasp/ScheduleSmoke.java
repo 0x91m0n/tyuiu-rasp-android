@@ -11,9 +11,11 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.util.SizeF;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ProgressBar;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.time.Instant;
@@ -130,6 +132,7 @@ public final class ScheduleSmoke extends Instrumentation {
 
             AppWidgetManager widgets = context.getSystemService(AppWidgetManager.class);
             runOnMainSync(host::startListening);
+            store.select(schedule, "");
             var activeLesson = new Schedule.Lesson(start.minusMinutes(29), start.plusMinutes(66),
                     "Проверка прогресса", "", "", "", "");
             for (Widgets.Kind kind : Widgets.Kind.providers()) {
@@ -161,7 +164,10 @@ public final class ScheduleSmoke extends Instrumentation {
                         require(hasText(mounted.get(), expected), "Rendered widget " + type.getSimpleName());
                         if (kind == Widgets.Kind.PROGRESS) {
                             ProgressBar progress = mounted.get().findViewById(R.id.widget_progress);
-                            require(progress.getVisibility() == View.VISIBLE && progress.getProgress() > 0, "Visible class progress");
+                            require(progress.getVisibility() == View.VISIBLE && progress.getProgress() > 0,
+                                    "Visible class progress (visibility=" + progress.getVisibility()
+                                            + ", progress=" + progress.getProgress() + ", indeterminate="
+                                            + progress.isIndeterminate() + ")");
                         }
                     });
                 } finally {
@@ -169,6 +175,7 @@ public final class ScheduleSmoke extends Instrumentation {
                 }
             }
             checkWidgetOptions(context, store, host, widgets, withGap, lesson, other);
+            checkWidgetAgenda(context, store);
             if (ringAlarm) {
                 runOnMainSync(() -> screen.moveTaskToBack(true));
                 checkAlarmRing(context, notifications);
@@ -188,6 +195,90 @@ public final class ScheduleSmoke extends Instrumentation {
             ScheduleEvents.run(context, false);
         }
         finish(status, result);
+    }
+
+    private void checkWidgetAgenda(Context context, ScheduleStore store) {
+        var day = LocalDate.of(2026, 11, 20);
+        var now = day.atTime(11, 0).atZone(Schedule.ZONE).toInstant();
+        var schedule = new Schedule("СМКб-26-1", "", List.of(
+                new Schedule.Lesson(day.atTime(13, 45), day.atTime(15, 20), "Основы российской государственности",
+                        "Практика", "315 / Корпус 2", "Смирнова Александра Владимировна", "1"),
+                new Schedule.Lesson(day.atTime(17, 15), day.atTime(18, 50), "Проектная деятельность",
+                        "Практика", "504а / Корпус 1а", "Кузнецова Ирина Юрьевна", "1")), false);
+        int fields = WidgetOptions.TIME | WidgetOptions.ROOM | WidgetOptions.TYPE | WidgetOptions.TEACHER
+                | WidgetOptions.GAPS | WidgetOptions.HEADER | WidgetOptions.GROUP;
+        var options = new WidgetOptions(Widgets.Kind.DAY, "1", "dark", 100, 0, 0, false, fields, "");
+        runOnMainSync(() -> {
+            var full = new SizeF(250, 250);
+            var remote = Widgets.make(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, full);
+            View widget = remote.apply(context, null);
+            layout(widget, context, full);
+            LinearLayout rows = widget.findViewById(R.id.widget_schedule_rows);
+            require(rows.getChildCount() == 3, "Two classes and a separate gap");
+            View first = rows.getChildAt(0);
+            var time = (TextView) first.findViewById(R.id.widget_row_time);
+            var subject = (TextView) first.findViewById(R.id.widget_row_subject);
+            require(time.getText().toString().equals("13:45") && subject.getText().toString().startsWith("Основы"),
+                    "Time and subject have independent text views");
+            require(hasText(first, "315 / Корпус 2 · Практика") && hasText(first, "Смирнова А. В."),
+                    "Optional metadata and teacher are on separate lines");
+            require(hasText(rows.getChildAt(1), "Окно · 115 мин") && hasText(rows.getChildAt(2), "Проектная деятельность"),
+                    "Gap belongs to the next visible class");
+            require(rows.getBottom() <= widget.getHeight() - widget.getPaddingBottom(), "Roomy agenda fits");
+            remote.reapply(context, widget);
+            require(rows.getChildCount() == 3, "Reapplying the widget does not duplicate rows");
+
+            var small = new SizeF(160, 133);
+            View compact = Widgets.make(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, small)
+                    .apply(context, null);
+            layout(compact, context, small);
+            LinearLayout shortRows = compact.findViewById(R.id.widget_schedule_rows);
+            require(hasText(compact, "13:45") && hasText(compact, "Ещё 1") && !hasText(compact, "Окно · 115 мин"),
+                    "Short widgets keep the first class and skip orphaned gaps");
+            require(shortRows.getBottom() <= compact.getHeight() - compact.getPaddingBottom(), "Compact agenda fits");
+
+            var hostOptions = new Bundle();
+            hostOptions.putParcelableArrayList(AppWidgetManager.OPTION_APPWIDGET_SIZES, new java.util.ArrayList<>(List.of(small, full)));
+            var sizes = Widgets.sizes(hostOptions, Widgets.Kind.DAY);
+            require(sizes.equals(List.of(small, full)), "Both launcher sizes are passed to the renderer");
+            View responsive = Widgets.renderSizes(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, sizes)
+                    .apply(context, null);
+            require(hasText(responsive, "13:45"), "Responsive widget can inflate");
+
+            var largeFont = new android.content.res.Configuration(context.getResources().getConfiguration());
+            largeFont.fontScale = 1.35f;
+            Context scaled = context.createConfigurationContext(largeFont);
+            View scaledWidget = Widgets.make(scaled, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, small)
+                    .apply(scaled, null);
+            layout(scaledWidget, scaled, small);
+            View scaledRows = scaledWidget.findViewById(R.id.widget_schedule_rows);
+            require(hasText(scaledWidget, "13:45")
+                    && scaledRows.getBottom() <= scaledWidget.getHeight() - scaledWidget.getPaddingBottom(),
+                    "Small widget fits with large system text");
+
+            var progressOptions = new WidgetOptions(Widgets.Kind.PROGRESS, "1", "dark", 100, 0, 0,
+                    false, fields | WidgetOptions.COUNTDOWN, "");
+            var progressSize = new SizeF(145, 85);
+            var during = day.atTime(14, 0).atZone(Schedule.ZONE).toInstant();
+            View progressWidget = Widgets.make(context, store, schedule, during, AppWidgetManager.INVALID_APPWIDGET_ID,
+                    progressOptions, progressSize).apply(context, null);
+            layout(progressWidget, context, progressSize);
+            View progress = progressWidget.findViewById(R.id.widget_progress);
+            View countdown = progressWidget.findViewById(R.id.widget_countdown);
+            require(progress.getVisibility() == View.VISIBLE && progress.getHeight() > 0
+                    && countdown.getVisibility() == View.VISIBLE && countdown.getHeight() > 0
+                    && progress.getBottom() <= progressWidget.getHeight() - progressWidget.getPaddingBottom(),
+                    "Countdown and progress bar fit in the compact widget");
+        });
+    }
+
+    private static void layout(View view, Context context, SizeF size) {
+        float density = context.getResources().getDisplayMetrics().density;
+        int width = Math.round(size.getWidth() * density);
+        int height = Math.round(size.getHeight() * density);
+        view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+        view.layout(0, 0, width, height);
     }
 
     private void checkWidgetOptions(Context context, ScheduleStore store, AppWidgetHost host, AppWidgetManager widgets,
