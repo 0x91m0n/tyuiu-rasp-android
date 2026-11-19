@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application' version '9.1.0'
+}
+
+def glyphEnabled = providers.gradleProperty('enableGlyph').orNull == 'true'
+
+android {
+    namespace = 'ru.tyuiu.rasp'
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = 'ru.tyuiu.rasp'
+        minSdk = 33
+        targetSdk = 36
+        versionCode = 3
+        versionName = '0.2.1'
+        testInstrumentationRunner = 'ru.tyuiu.rasp.ScheduleSmoke'
+        def catalog = providers.gradleProperty('scheduleCatalogUrl').getOrElse('')
+        buildConfigField 'String', 'CATALOG_URL', '"' + catalog.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    }
+    flavorDimensions 'hardware'
+    productFlavors {
+        opensource { dimension 'hardware' }
+        glyph {
+            dimension 'hardware'
+            manifestPlaceholders = [nothingKey: providers.gradleProperty('nothingKey').getOrElse('test')]
+        }
+    }
+    buildFeatures { buildConfig = true }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+androidComponents {
+    beforeVariants(selector().all()) { variant ->
+        if (!glyphEnabled && variant.flavorName == 'glyph') variant.enable = false
+    }
+}
+
+if (glyphEnabled) {
+    dependencies {
+        glyphImplementation 'com.nothing.glyph:glyph-matrix-sdk-2.0:8ee807a9312a640b0d43051450924e3446bc1d78@aar'
+    }
+}

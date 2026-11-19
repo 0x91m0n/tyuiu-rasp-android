@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">Пары ТИУ</string>
+    <string name="widget_next">Ближайшая пара · ТИУ</string>
+    <string name="widget_day">Пары на день · ТИУ</string>
+    <string name="widget_tomorrow">Пары на завтра · ТИУ</string>
+    <string name="widget_week">Расписание на 7 дней · ТИУ</string>
+    <string name="widget_progress">Прогресс пары · ТИУ</string>
+    <string name="class_remaining">СЕЙЧАС ИДЁТ  ·  %1$d мин до конца</string>
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#131B17</item>
+        <item name="android:statusBarColor">#131B17</item>
+        <item name="android:navigationBarColor">#131B17</item>
+        <item name="android:colorAccent">#C7F478</item>
+    </style>
+    <style name="AppThemeLight" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#EFF3EE</item>
+        <item name="android:colorAccent">#315D37</item>
+    </style>
+</resources>

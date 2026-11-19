@@ -1,0 +1,26 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        if (providers.gradleProperty('enableGlyph').orNull == 'true') {
+            ivy {
+                url = 'https://raw.githubusercontent.com/Nothing-Developer-Programme/Glyph-Developer-Kit/'
+                patternLayout {
+                    artifact '[revision]/sdk/[artifact].[ext]'
+                }
+                metadataSources { artifact() }
+                content { includeGroup 'com.nothing.glyph' }
+            }
+        }
+    }
+}
+rootProject.name = 'PairsTIU'
+include ':app'
