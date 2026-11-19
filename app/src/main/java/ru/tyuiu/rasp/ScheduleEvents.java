@@ -29,7 +29,12 @@ public final class ScheduleEvents extends BroadcastReceiver {
     }
 
     static PendingIntent open(Context context, String view) {
-        int request = switch (view) { case "tomorrow" -> 1; case "week" -> 2; default -> 0; };
+        int request = switch (view) {
+            case "tomorrow" -> 1;
+            case "week" -> 2;
+            case "week-alarms" -> 3;
+            default -> 0;
+        };
         return PendingIntent.getActivity(context, request, new Intent(context, MainActivity.class)
                 .putExtra(OPEN_VIEW, view).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);

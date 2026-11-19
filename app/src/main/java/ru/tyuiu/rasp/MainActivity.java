@@ -105,6 +105,9 @@ public final class MainActivity extends Activity {
                     | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
             insets.setSystemBarsAppearance(palette == ThemePalette.LIGHT ? mask : 0, mask);
         }
+        if (state == null && "week-alarms".equals(getIntent().getStringExtra(ScheduleEvents.OPEN_VIEW))) {
+            WeekAlarmSettings.show(this);
+        }
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {
@@ -119,6 +122,7 @@ public final class MainActivity extends Activity {
         setIntent(intent);
         applyEntry(intent);
         render(false);
+        if ("week-alarms".equals(intent.getStringExtra(ScheduleEvents.OPEN_VIEW))) WeekAlarmSettings.show(this);
     }
 
     private void applyEntry(Intent intent) {
@@ -132,6 +136,7 @@ public final class MainActivity extends Activity {
         super.onResume();
         foreground = true;
         ScheduleEvents.run(this, true);
+        WeekAlarms.reschedule(this);
         render(true);
         handler.post(ticker);
     }
@@ -310,17 +315,21 @@ public final class MainActivity extends Activity {
             empty.addView(label("Пар нет", 16, palette.muted, false));
             add(page, empty, 10);
         }
-        LinearLayout slot = null;
-        Schedule.Lesson previous = null;
-        for (Schedule.Lesson lesson : lessons) {
-            if (previous == null || !previous.start().equals(lesson.start()) || !previous.end().equals(lesson.end())) {
-                slot = box(palette.card);
-                slot.addView(label(lesson.time(), 14, palette.accent, true));
-                add(page, slot, 10);
+        Instant previousEnd = null;
+        for (List<Schedule.Lesson> lessonsAtTime : Schedule.slots(lessons)) {
+            Schedule.Lesson first = lessonsAtTime.get(0);
+            if (previousEnd != null) {
+                long gap = ChronoUnit.MINUTES.between(previousEnd, first.starts());
+                if (gap > 0) add(page, label("Окно · " + gap + " мин", 13, palette.muted, false), 10);
             }
-            add(slot, label(lesson.title(), 19, palette.text, true), 6);
-            if (!lesson.meta().isBlank()) add(slot, label(lesson.meta(), 14, palette.muted, false), 4);
-            previous = lesson;
+            var slot = box(palette.card);
+            slot.addView(label(first.time(), 14, palette.accent, true));
+            for (Schedule.Lesson lesson : lessonsAtTime) {
+                add(slot, label(lesson.title(), 19, palette.text, true), 6);
+                if (!lesson.meta().isBlank()) add(slot, label(lesson.meta(), 14, palette.muted, false), 4);
+            }
+            add(page, slot, 10);
+            if (previousEnd == null || first.ends().isAfter(previousEnd)) previousEnd = first.ends();
         }
     }
 
@@ -504,8 +513,10 @@ public final class MainActivity extends Activity {
         option(names, actions, "Будильник за " + store.wakeLead() + " мин до пары",
                 () -> minutes("Когда будить", "wakeLead", store.wakeLead(), 360));
         option(names, actions, "Добавить виджет", this::pinWidget);
+        option(names, actions, "Экспериментальные функции", this::experiments);
         if (GlyphProgress.supported()) option(names, actions, "Glyph · " + (store.glyph() ? "включён" : "выключен"), this::glyphSettings);
         option(names, actions, "Открыть сайт расписания ТИУ", () -> openLink(OFFICIAL));
+        option(names, actions, "О приложении", this::about);
         new AlertDialog.Builder(this).setTitle("Настройки").setItems(names.toArray(new String[0]),
                 (dialog, which) -> actions.get(which).run()).setNegativeButton("Закрыть", null).show();
     }
@@ -565,6 +576,11 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] result) {
         super.onRequestPermissionsResult(requestCode, permissions, result);
+        if (requestCode == WeekAlarmSettings.NOTIFICATION_PERMISSION) {
+            WeekAlarms.reschedule(this);
+            WeekAlarmSettings.show(this);
+            return;
+        }
         if (requestCode == NOTIFICATIONS && result.length > 0) {
             if (result[0] == PackageManager.PERMISSION_GRANTED) {
                 store.prefs.edit().putBoolean("notifications", true).apply();
@@ -607,7 +623,7 @@ public final class MainActivity extends Activity {
             dialog.setMessage(message + "\n\nДля этой даты установи будильник вручную в приложении «Часы».")
                     .setPositiveButton("Открыть часы", (d, which) -> startClock(new Intent(AlarmClock.ACTION_SHOW_ALARMS)));
         } else {
-            dialog.setMessage(message).setPositiveButton("Открыть часы", (d, which) -> {
+            dialog.setMessage(message).setPositiveButton("Установить в часах", (d, which) -> {
                 if (!isNextOccurrence(wake, LocalDateTime.now(deviceZone)) || !deviceZone.equals(ZoneId.systemDefault())) {
                     toast("Время изменилось. Откройте расчёт будильника ещё раз.");
                     return;
@@ -626,6 +642,24 @@ public final class MainActivity extends Activity {
     private void startClock(Intent intent) {
         try { startActivity(intent); }
         catch (ActivityNotFoundException unavailable) { toast("Приложение «Часы» не найдено"); }
+    }
+
+    private void about() {
+        new AlertDialog.Builder(this).setTitle("О приложении")
+                .setMessage("Пары ТИУ " + BuildConfig.VERSION_NAME + "\n"
+                        + "Исходный код доступен по лицензии Apache 2.0.\n\n"
+                        + "Предложения и замечания можно отправить @gnomecore.")
+                .setPositiveButton("Предложить идею", (dialog, choice) -> openLink("https://t.me/gnomecore"))
+                .setNeutralButton("Исходный код", (dialog, choice) ->
+                        openLink("https://github.com/0x91m0n/tyuiu-rasp-android"))
+                .setNegativeButton("Закрыть", null).show();
+    }
+
+    private void experiments() {
+        new AlertDialog.Builder(this).setTitle("Экспериментальные функции")
+                .setItems(new String[]{"Будильники по учебным неделям"},
+                        (dialog, choice) -> WeekAlarmSettings.show(this))
+                .setNegativeButton("Закрыть", null).show();
     }
 
     private void pinWidget() {

@@ -1,6 +1,7 @@
 package ru.tyuiu.rasp;
 
 import android.app.Activity;
+import android.app.AlarmManager;
 import android.app.Instrumentation;
 import android.app.NotificationManager;
 import android.appwidget.AppWidgetHost;
@@ -16,17 +17,23 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 import java.time.Instant;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.Arrays;
 import java.util.List;
 
 public final class ScheduleSmoke extends Instrumentation {
     private boolean officialNetwork;
+    private boolean ringAlarm;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         officialNetwork = "true".equals(arguments.getString("official"));
+        ringAlarm = "true".equals(arguments.getString("weekAlarm"));
         start();
     }
 
@@ -60,13 +67,28 @@ public final class ScheduleSmoke extends Instrumentation {
             require(!MainActivity.isNextOccurrence(start, start.plusMinutes(1)), "Elapsed wake");
             require(OfficialTiu.evenWeek(LocalDate.of(2026, 11, 19)), "Academic week, not ISO parity");
             require(!OfficialTiu.evenWeek(LocalDate.of(2026, 11, 26)), "Parity alternates");
+            var odd = new int[7];
+            var even = new int[7];
+            Arrays.fill(odd, -1);
+            Arrays.fill(even, -1);
+            odd[0] = 7 * 60;
+            even[0] = 8 * 60 + 15;
+            var monday = LocalDate.of(2026, 11, 23);
+            var before = monday.atTime(6, 0).atZone(Schedule.ZONE).toInstant();
+            var oddAlarm = monday.atTime(7, 0).atZone(Schedule.ZONE).toInstant();
+            var evenAlarm = monday.plusWeeks(1).atTime(8, 15).atZone(Schedule.ZONE).toInstant();
+            require(oddAlarm.equals(WeekAlarms.next(odd, even, before, Schedule.ZONE)), "Odd week alarm time");
+            require(evenAlarm.equals(WeekAlarms.next(odd, even, oddAlarm, Schedule.ZONE)), "Even week alarm time");
             if (officialNetwork) {
                 var group = Schedule.groups(Schedule.https(OfficialTiu.HOME)).stream()
                         .findFirst().orElseThrow();
                 Schedule live = Schedule.load(group.url());
                 require(live.group.equals(group.name()) && !live.lessons.isEmpty(), "Official timetable on Android");
             }
-            store.select(schedule, "");
+            var withGap = new Schedule(schedule.group, schedule.source, List.of(lesson,
+                    new Schedule.Lesson(lesson.end().plusMinutes(40), lesson.end().plusMinutes(135),
+                            "Вторая пара", "", "", "", "")), false);
+            store.select(withGap, "");
             store.prefs.edit().putBoolean("notifications", true).putInt("lead", 20).putString("theme", "indigo").apply();
             activity = startActivitySync(new Intent(context, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             Activity screen = activity;
@@ -74,6 +96,7 @@ public final class ScheduleSmoke extends Instrumentation {
             runOnMainSync(() -> require(hasText(screen.getWindow().getDecorView(), lesson.title()), "Next lesson UI"));
             runOnMainSync(() -> {
                 View root = screen.getWindow().getDecorView();
+                require(hasText(root, "Окно · 40 мин"), "Gap drawn between lessons");
                 TextView header = findText(root, "Пары ТИУ");
                 require(header != null && header.getCurrentTextColor() == ThemePalette.INDIGO.text, "Saved theme");
                 TextView weekly = findText(root, "7 дней");
@@ -132,8 +155,13 @@ public final class ScheduleSmoke extends Instrumentation {
                     host.deleteAppWidgetId(id);
                 }
             }
+            if (ringAlarm) {
+                runOnMainSync(() -> screen.moveTaskToBack(true));
+                checkAlarmRing(context, notifications);
+            }
             result.putString("stream", "\nSchedule, reminders, wake-date calculation and five widgets passed.\n"
-                    + (officialNetwork ? "The official catalog and group timetable loaded on Android.\n" : ""));
+                    + (officialNetwork ? "The official catalog and group timetable loaded on Android.\n" : "")
+                    + (ringAlarm ? "The exact week alarm fired, showed its stop action and scheduled the next week.\n" : ""));
         } catch (Throwable failure) {
             status = Activity.RESULT_CANCELED;
             result.putString("stream", "\n" + android.util.Log.getStackTraceString(failure));
@@ -146,6 +174,42 @@ public final class ScheduleSmoke extends Instrumentation {
             ScheduleEvents.run(context, false);
         }
         finish(status, result);
+    }
+
+    private static void checkAlarmRing(Context context, NotificationManager notifications) throws Exception {
+        var alarms = context.getSystemService(AlarmManager.class);
+        require(alarms.canScheduleExactAlarms(), "Grant exact alarm access to the emulator first");
+        var prefs = WeekAlarms.prefs(context);
+        var old = prefs.getAll();
+        try {
+            var wake = Instant.now().plusSeconds(85).truncatedTo(ChronoUnit.MINUTES);
+            var local = wake.atZone(ZoneId.systemDefault());
+            DayOfWeek weekday = local.getDayOfWeek();
+            boolean even = OfficialTiu.evenWeek(local.toLocalDate());
+            int minutes = local.getHour() * 60 + local.getMinute();
+            prefs.edit().clear().putBoolean("enabled", true).putInt(WeekAlarms.key(even, weekday), minutes).commit();
+            WeekAlarms.reschedule(context);
+            require(alarms.getNextAlarmClock().getTriggerTime() == wake.toEpochMilli(), "Alarm is scheduled");
+            var deadline = wake.plusSeconds(12);
+            while (Instant.now().isBefore(deadline)) {
+                for (var notice : notifications.getActiveNotifications()) {
+                    if (WeekAlarms.CHANNEL.equals(notice.getNotification().getChannelId())) {
+                        require(notice.getNotification().actions.length == 1, "Alarm offers a stop action");
+                        require(alarms.getNextAlarmClock().getTriggerTime() > wake.toEpochMilli(), "Next alarm is scheduled");
+                        notice.getNotification().actions[0].actionIntent.send();
+                        return;
+                    }
+                }
+                Thread.sleep(300);
+            }
+            throw new AssertionError("Alarm did not start its foreground notification");
+        } finally {
+            context.stopService(new Intent(context, WeekAlarmService.class));
+            var editor = prefs.edit().clear();
+            for (var item : old.entrySet()) restore(editor, item.getKey(), item.getValue());
+            editor.commit();
+            WeekAlarms.reschedule(context);
+        }
     }
 
     private static boolean hasText(View node, String value) {

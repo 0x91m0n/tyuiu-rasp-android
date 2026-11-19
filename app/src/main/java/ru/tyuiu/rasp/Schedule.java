@@ -90,6 +90,16 @@ final class Schedule {
         return out;
     }
 
+    static List<List<Lesson>> slots(List<Lesson> lessons) {
+        record SlotTime(LocalDateTime start, LocalDateTime end) {}
+        var slots = new java.util.LinkedHashMap<SlotTime, List<Lesson>>();
+        for (Lesson lesson : lessons) {
+            var key = new SlotTime(lesson.start(), lesson.end());
+            slots.computeIfAbsent(key, ignored -> new ArrayList<>()).add(lesson);
+        }
+        return new ArrayList<>(slots.values());
+    }
+
     static boolean matches(Lesson lesson, String subgroup) {
         if (subgroup.isBlank() || lesson.subgroup.isBlank()) return true;
         for (String part : lesson.subgroup.split("[,/;]")) {
