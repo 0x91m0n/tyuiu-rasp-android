@@ -8,6 +8,10 @@
         android:layout_height="wrap_content" android:layout_marginTop="4dp"
         android:text="@string/app_name" android:textStyle="bold" android:textSize="18sp"
         android:textColor="#F1F5EC" android:maxLines="2" android:ellipsize="end" />
+    <Chronometer android:id="@+id/widget_countdown"
+        android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="2dp" android:fontFamily="monospace"
+        android:textSize="15sp" android:visibility="gone" />
     <TextView android:id="@+id/widget_details" android:layout_width="match_parent"
         android:layout_height="wrap_content" android:layout_marginTop="3dp"
         android:textSize="13sp" android:textColor="#BECABC" android:maxLines="5" android:ellipsize="end" />

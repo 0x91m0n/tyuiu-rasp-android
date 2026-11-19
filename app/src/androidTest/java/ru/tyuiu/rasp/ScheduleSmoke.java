@@ -85,7 +85,8 @@ public final class ScheduleSmoke extends Instrumentation {
                 Schedule live = Schedule.load(group.url());
                 require(live.group.equals(group.name()) && !live.lessons.isEmpty(), "Official timetable on Android");
             }
-            var withGap = new Schedule(schedule.group, schedule.source, List.of(lesson,
+            var other = new Schedule.Lesson(start, start.plusMinutes(95), "Пара другой подгруппы", "", "Ауд. 215", "", "2");
+            var withGap = new Schedule(schedule.group, schedule.source, List.of(lesson, other,
                     new Schedule.Lesson(lesson.end().plusMinutes(40), lesson.end().plusMinutes(135),
                             "Вторая пара", "", "", "", "")), false);
             store.select(withGap, "");
@@ -99,7 +100,19 @@ public final class ScheduleSmoke extends Instrumentation {
                 require(hasText(root, "Окно · 40 мин"), "Gap drawn between lessons");
                 TextView header = findText(root, "Пары ТИУ");
                 require(header != null && header.getCurrentTextColor() == ThemePalette.INDIGO.text, "Saved theme");
-                TextView weekly = findText(root, "7 дней");
+                require(!hasText(root, "Будильник к первой паре") && !hasText(root, "Виджеты"), "Schedule actions moved to settings");
+                View second = findDescription(root, "Подгруппа 2");
+                require(second != null && second.performClick(), "Subgroup preview");
+                root = screen.getWindow().getDecorView();
+                require(hasText(root, other.title()) && !hasText(root, lesson.title()) && store.subgroup().isEmpty(),
+                        "Subgroup preview does not overwrite the personal setting");
+                require(findDescription(root, "Все подгруппы").performClick(), "Clear subgroup preview");
+                root = screen.getWindow().getDecorView();
+                require(findText(root, "Настройки").performClick(), "Open settings");
+                root = screen.getWindow().getDecorView();
+                require(hasText(root, "Данные расписания") && hasText(root, "Виджеты"), "Grouped settings");
+                require(findDescription(root, "Назад").performClick(), "Back to schedule");
+                TextView weekly = findText(screen.getWindow().getDecorView(), "7 дней");
                 require(weekly != null && weekly.performClick(), "Open seven-day feed");
                 LocalDate date = start.toLocalDate().plusDays(6);
                 String label = date.format(DateTimeFormatter.ofPattern("EEEE, d MMMM", Schedule.RU));
@@ -119,7 +132,7 @@ public final class ScheduleSmoke extends Instrumentation {
             runOnMainSync(host::startListening);
             var activeLesson = new Schedule.Lesson(start.minusMinutes(29), start.plusMinutes(66),
                     "Проверка прогресса", "", "", "", "");
-            for (Widgets.Kind kind : Widgets.Kind.values()) {
+            for (Widgets.Kind kind : Widgets.Kind.providers()) {
                 Class<?> type = kind.provider;
                 Schedule widgetSchedule = schedule;
                 if (kind == Widgets.Kind.PROGRESS) {
@@ -139,7 +152,7 @@ public final class ScheduleSmoke extends Instrumentation {
                         case NEXT -> lesson.title();
                         case PROGRESS -> activeLesson.title();
                         case WEEK -> schedule.group;
-                        case DAY, TOMORROW -> {
+                        case DAY, TODAY, TOMORROW -> {
                             var date = kind == Widgets.Kind.DAY ? Schedule.today() : Schedule.today().plusDays(1);
                             yield date.format(Schedule.DATE) + " · " + schedule.group;
                         }
@@ -155,11 +168,12 @@ public final class ScheduleSmoke extends Instrumentation {
                     host.deleteAppWidgetId(id);
                 }
             }
+            checkWidgetOptions(context, store, host, widgets, withGap, lesson, other);
             if (ringAlarm) {
                 runOnMainSync(() -> screen.moveTaskToBack(true));
                 checkAlarmRing(context, notifications);
             }
-            result.putString("stream", "\nSchedule, reminders, wake-date calculation and five widgets passed.\n"
+            result.putString("stream", "\nSchedule, subgroup preview, settings, reminders, five widgets and independent widget options passed.\n"
                     + (officialNetwork ? "The official catalog and group timetable loaded on Android.\n" : "")
                     + (ringAlarm ? "The exact week alarm fired, showed its stop action and scheduled the next week.\n" : ""));
         } catch (Throwable failure) {
@@ -174,6 +188,49 @@ public final class ScheduleSmoke extends Instrumentation {
             ScheduleEvents.run(context, false);
         }
         finish(status, result);
+    }
+
+    private void checkWidgetOptions(Context context, ScheduleStore store, AppWidgetHost host, AppWidgetManager widgets,
+                                    Schedule schedule, Schedule.Lesson first, Schedule.Lesson second) throws Exception {
+        store.select(schedule, "");
+        int one = host.allocateAppWidgetId();
+        int two = host.allocateAppWidgetId();
+        try {
+            var provider = new ComponentName(context, NextWidget.class);
+            require(widgets.bindAppWidgetIdIfAllowed(one, provider) && widgets.bindAppWidgetIdIfAllowed(two, provider),
+                    "Bind two independent widget instances");
+            WidgetOptions.save(context, one, new WidgetOptions(Widgets.Kind.NEXT, "1", "mono", 60, 1, 3, true,
+                    WidgetOptions.HEADER | WidgetOptions.ROOM | WidgetOptions.COUNTDOWN, "Моя пара"));
+            WidgetOptions.save(context, two, new WidgetOptions(Widgets.Kind.NEXT, "2", "light", 100, -1, 2, false,
+                    WidgetOptions.HEADER | WidgetOptions.TIME, "Вторая подгруппа"));
+            Widgets.updateAll(context, store, schedule, Instant.now());
+            var left = new java.util.concurrent.atomic.AtomicReference<AppWidgetHostView>();
+            var right = new java.util.concurrent.atomic.AtomicReference<AppWidgetHostView>();
+            runOnMainSync(() -> {
+                left.set(host.createView(context, one, widgets.getAppWidgetInfo(one)));
+                right.set(host.createView(context, two, widgets.getAppWidgetInfo(two)));
+            });
+            waitForIdleSync();
+            runOnMainSync(() -> {
+                require(hasText(left.get(), first.title()) && hasText(left.get(), "Моя пара"), "Custom title and first subgroup");
+                require(hasText(right.get(), second.title()) && hasText(right.get(), "Вторая подгруппа"), "Second subgroup");
+                require(left.get().findViewById(R.id.widget_countdown).getVisibility() == View.VISIBLE,
+                        "Configured countdown");
+                require(right.get().findViewById(R.id.widget_countdown).getVisibility() == View.GONE,
+                        "Countdown preference is per widget");
+            });
+            Activity settings = startActivitySync(WidgetConfigurationActivity.intent(context, two)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            runOnMainSync(() -> {
+                View root = settings.getWindow().getDecorView();
+                require(hasText(root, "Настройка виджета") && hasText(root, "Вторая подгруппа"), "Live configuration preview");
+                require(findText(root, "Сохранить").performClick(), "Save widget configuration");
+            });
+            require(WidgetOptions.load(context, two, Widgets.Kind.NEXT).subgroup().equals("2"), "Saved subgroup preserved");
+        } finally {
+            host.deleteAppWidgetId(one);
+            host.deleteAppWidgetId(two);
+        }
     }
 
     private static void checkAlarmRing(Context context, NotificationManager notifications) throws Exception {
@@ -221,6 +278,17 @@ public final class ScheduleSmoke extends Instrumentation {
         if (node instanceof ViewGroup group) {
             for (int i = 0; i < group.getChildCount(); i++) {
                 var found = findText(group.getChildAt(i), value);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static View findDescription(View node, String value) {
+        if (node.getContentDescription() != null && value.contentEquals(node.getContentDescription())) return node;
+        if (node instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                var found = findDescription(group.getChildAt(i), value);
                 if (found != null) return found;
             }
         }

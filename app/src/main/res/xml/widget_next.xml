@@ -2,4 +2,5 @@
     android:minWidth="140dp" android:minHeight="85dp" android:targetCellWidth="3"
     android:targetCellHeight="2" android:initialLayout="@layout/widget_card"
     android:resizeMode="horizontal|vertical" android:updatePeriodMillis="1800000"
-    android:widgetCategory="home_screen" />
+    android:widgetCategory="home_screen" android:configure="ru.tyuiu.rasp.WidgetConfigurationActivity"
+    android:widgetFeatures="configuration_optional|reconfigurable" />

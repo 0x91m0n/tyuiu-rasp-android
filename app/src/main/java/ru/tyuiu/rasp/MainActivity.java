@@ -26,12 +26,14 @@ import android.view.WindowInsetsController;
 import android.view.WindowInsets;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.window.OnBackInvokedCallback;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -57,6 +59,10 @@ public final class MainActivity extends Activity {
     private ThemePalette palette;
     private boolean followDay = true;
     private boolean week;
+    private String viewedSubgroup;
+    private String settingsPage = "";
+    private int agendaScroll;
+    private final OnBackInvokedCallback settingsBack = this::backFromSettings;
     private TextView featuredStatus;
     private ProgressBar featuredProgress;
     private String featuredKey = "";
@@ -72,9 +78,9 @@ public final class MainActivity extends Activity {
             Schedule schedule = store.read();
             Instant now = Instant.now();
             LocalDate today = Schedule.today();
-            String key = featuredKey(schedule.next(now, store.subgroup()), now);
+            String key = featuredKey(schedule.next(now, visibleSubgroup(schedule)), now);
             boolean switchDay = followDay && !date.equals(schedule.defaultDay(now, store.subgroup()));
-            if (switchDay || !today.equals(shownToday) || !key.equals(featuredKey)) render(!switchDay);
+            if (settingsPage.isEmpty() && (switchDay || !today.equals(shownToday) || !key.equals(featuredKey))) render(!switchDay);
             else updateProgress(now);
             handler.postDelayed(this, 5_000);
         }
@@ -92,6 +98,10 @@ public final class MainActivity extends Activity {
         else {
             followDay = state.getBoolean("followDay", true);
             week = state.getBoolean("week");
+            viewedSubgroup = state.getString("viewedSubgroup");
+            settingsPage = state.getString("settingsPage", "");
+            agendaScroll = state.getInt("agendaScroll");
+            if (!settingsPage.isEmpty()) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, settingsBack);
         }
         preferenceListener = (prefs, key) -> {
             if ("data".equals(key) && foreground && !busy) render(true);
@@ -115,12 +125,19 @@ public final class MainActivity extends Activity {
         state.putString("date", date.toString());
         state.putBoolean("followDay", followDay);
         state.putBoolean("week", week);
+        state.putString("viewedSubgroup", viewedSubgroup);
+        state.putString("settingsPage", settingsPage);
+        state.putInt("agendaScroll", agendaScroll);
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
         applyEntry(intent);
+        if (!settingsPage.isEmpty()) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(settingsBack);
+            settingsPage = "";
+        }
         render(false);
         if ("week-alarms".equals(intent.getStringExtra(ScheduleEvents.OPEN_VIEW))) WeekAlarmSettings.show(this);
     }
@@ -129,7 +146,18 @@ public final class MainActivity extends Activity {
         String view = intent.getStringExtra(ScheduleEvents.OPEN_VIEW);
         week = "week".equals(view);
         followDay = !"tomorrow".equals(view);
+        viewedSubgroup = intent.getStringExtra(ScheduleEvents.OPEN_SUBGROUP);
         if (!followDay) date = Schedule.today().plusDays(1);
+        String widgetDate = intent.getStringExtra(ScheduleEvents.OPEN_DATE);
+        if (widgetDate != null) {
+            try {
+                LocalDate target = LocalDate.parse(widgetDate);
+                if (Math.abs(ChronoUnit.DAYS.between(Schedule.today(), target)) < 370) {
+                    date = target;
+                    followDay = false;
+                }
+            } catch (java.time.format.DateTimeParseException ignored) {}
+        }
     }
 
     @Override protected void onResume() {
@@ -155,33 +183,26 @@ public final class MainActivity extends Activity {
     }
 
     private void render(boolean keepScroll) {
+        if (!settingsPage.isEmpty()) {
+            renderSettings(keepScroll);
+            return;
+        }
         int scrollY = keepScroll && scroll != null ? scroll.getScrollY() : 0;
+        renderSchedule(scrollY);
+    }
+
+    private void renderSchedule(int scrollY) {
         shownToday = Schedule.today();
         Schedule schedule = store.read();
+        String subgroup = visibleSubgroup(schedule);
         Instant now = Instant.now();
         if (followDay) date = schedule.defaultDay(now, store.subgroup());
-        Schedule.Lesson next = schedule.next(now, store.subgroup());
+        Schedule.Lesson next = schedule.next(now, subgroup);
         featuredKey = featuredKey(next, now);
         featuredStatus = null;
         featuredProgress = null;
 
-        var outer = new LinearLayout(this);
-        outer.setOrientation(LinearLayout.VERTICAL);
-        outer.setBackgroundColor(palette.background);
-        outer.setOnApplyWindowInsetsListener((view, insets) -> {
-            var bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            return insets;
-        });
-        scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setClipToPadding(false);
-        page = column();
-        pad(page, 20, 22, 20, 29);
-        scroll.addView(page);
-        outer.addView(scroll);
-        setContentView(outer);
-        if (scrollY != 0) scroll.post(() -> scroll.scrollTo(0, scrollY));
+        beginPage(scrollY);
 
         LinearLayout top = row();
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -193,7 +214,6 @@ public final class MainActivity extends Activity {
         String group = schedule.group;
         String groupLabel = group.isEmpty() ? "Выбрать группу" : group;
         if (schedule.demo) groupLabel += " · демо";
-        if (!store.subgroup().isBlank()) groupLabel += " · подгр. " + store.subgroup();
         var groupButton = button(groupLabel + "  ▾", false, this::chooseGroup);
         if (!group.isEmpty()) groupButton.setContentDescription("Выбрать группу. Сейчас " + groupLabel);
         add(page, groupButton, 12);
@@ -208,13 +228,12 @@ public final class MainActivity extends Activity {
             var welcome = box(palette.card);
             welcome.addView(label("Расписание твоей группы", 24, palette.text, true));
             add(welcome, label("Выбери группу, чтобы увидеть пары, аудитории и преподавателей.", 15, palette.muted, false), 10);
-            add(welcome, button("Открыть сайт расписания ТИУ", false, () -> openLink(OFFICIAL)), 14);
-            add(welcome, button("Посмотреть демо", false, () -> save(Schedule.example(), "")), 8);
+            add(welcome, button("Посмотреть демо", false, () -> save(Schedule.example(), "")), 14);
             add(page, welcome, 22);
-            add(page, button("Виджеты", false, this::pinWidget), 16);
             return;
         }
 
+        addSubgroupFilter(schedule, subgroup);
         if (next != null) {
             boolean active = !next.starts().isAfter(now);
             var featured = box(palette.accent);
@@ -277,36 +296,77 @@ public final class MainActivity extends Activity {
             String parity = OfficialTiu.evenWeek(date) ? "Чётная учебная неделя" : "Нечётная учебная неделя";
             add(page, label(parity, 13, palette.muted, false), 9);
         }
-        List<Schedule.Lesson> lessons = schedule.day(date, store.subgroup());
+        List<Schedule.Lesson> lessons = schedule.day(date, subgroup);
         if (week) {
             for (int offset = 0; offset < 7; offset++) {
                 LocalDate target = date.plusDays(offset);
                 add(page, label(capitalize(target.format(FULL_DATE)), 18, palette.text, true), 16);
-                addLessons(schedule.day(target, store.subgroup()));
+                addLessons(schedule.day(target, subgroup));
             }
         } else {
             addLessons(lessons);
         }
-        if (!schedule.demo) {
-            Schedule.Lesson first = lessons.isEmpty() || !lessons.get(0).starts().isAfter(now)
-                    ? firstUpcomingDay(schedule, now) : lessons.get(0);
-            if (first != null) {
-                String when = date.equals(first.start().toLocalDate()) ? "" : " · " + first.start().format(Schedule.DATE);
-                add(page, button("Будильник к первой паре" + when, false, () -> clock(first)), 16);
-            }
-        }
-        add(page, button("Виджеты", false, this::pinWidget), 9);
-        if (!store.feed().isEmpty()) add(page, button("Обновить расписание", false, this::refresh), 9);
         String source = schedule.source.isBlank() ? "Сохранённое расписание" : schedule.source;
         if (!store.feed().isEmpty() && System.currentTimeMillis() - store.lastSync() > 48 * 3600_000L) {
             source += " · давно не обновлялось";
         }
         if (!ZoneId.systemDefault().equals(Schedule.ZONE)) source += " · время Тюмени";
         add(page, label(source, 12, palette.muted, false), 15);
-        if (store.feed().startsWith(OfficialTiu.HOME + "schedule/group/")) {
-            add(page, button("Эта группа на сайте ТИУ", false, () -> openLink(store.feed())), 8);
-        }
         updateProgress(now);
+    }
+
+    private void beginPage(int scrollY) {
+        var outer = column();
+        outer.setBackgroundColor(palette.background);
+        outer.setOnApplyWindowInsetsListener((view, insets) -> {
+            var bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            return insets;
+        });
+        scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        page = column();
+        pad(page, 20, 22, 20, 29);
+        scroll.addView(page);
+        outer.addView(scroll);
+        setContentView(outer);
+        if (scrollY != 0) {
+            ScrollView current = scroll;
+            current.post(() -> current.scrollTo(0, scrollY));
+        }
+    }
+
+    private String visibleSubgroup(Schedule schedule) {
+        if (viewedSubgroup != null && (viewedSubgroup.isBlank() || schedule.subgroups().contains(viewedSubgroup))) {
+            return viewedSubgroup;
+        }
+        return store.subgroup();
+    }
+
+    private void addSubgroupFilter(Schedule schedule, String selected) {
+        List<String> subgroups = schedule.subgroups();
+        if (subgroups.isEmpty()) return;
+        var viewport = new HorizontalScrollView(this);
+        viewport.setHorizontalScrollBarEnabled(false);
+        var options = row();
+        var values = new java.util.ArrayList<String>();
+        values.add("");
+        values.addAll(subgroups);
+        for (String value : values) {
+            boolean active = value.equals(selected);
+            var chip = button(value.isEmpty() ? "Все" : value, active, () -> {
+                if (value.equals(selected)) return;
+                viewedSubgroup = value;
+                render(true);
+            });
+            chip.setSelected(active);
+            chip.setContentDescription(value.isEmpty() ? "Все подгруппы" : "Подгруппа " + value);
+            var space = new LinearLayout.LayoutParams(-2, -2);
+            space.setMarginEnd(dp(7));
+            options.addView(chip, space);
+        }
+        viewport.addView(options);
+        add(page, viewport, 9);
     }
 
     private void addLessons(List<Schedule.Lesson> lessons) {
@@ -339,7 +399,7 @@ public final class MainActivity extends Activity {
 
     private void updateProgress(Instant now) {
         Schedule schedule = store.read();
-        Schedule.Lesson lesson = schedule.next(now, store.subgroup());
+        Schedule.Lesson lesson = schedule.next(now, visibleSubgroup(schedule));
         boolean active = lesson != null && !lesson.starts().isAfter(now);
         int percent = active ? lesson.progress(now) : 0;
         if (featuredProgress != null && featuredStatus != null && active) {
@@ -490,6 +550,7 @@ public final class MainActivity extends Activity {
     private void save(Schedule schedule, String feed) {
         try {
             store.select(schedule, feed);
+            viewedSubgroup = null;
             date = Schedule.today();
             followDay = true;
             week = false;
@@ -500,30 +561,144 @@ public final class MainActivity extends Activity {
     }
 
     private void settings() {
-        var names = new java.util.ArrayList<String>();
-        var actions = new java.util.ArrayList<Runnable>();
-        option(names, actions, "Каталог групп", this::catalogSettings);
-        option(names, actions, "Открыть файл расписания", this::importSchedule);
-        if (!store.read().group.isEmpty()) {
-            option(names, actions, "Подгруппа", this::subgroup);
-            if (!store.read().demo) option(names, actions, "Экспорт расписания в JSON", this::exportSchedule);
-        }
-        option(names, actions, "Напоминания о парах", this::reminderSettings);
-        option(names, actions, "Тема оформления", this::themeSettings);
-        option(names, actions, "Будильник за " + store.wakeLead() + " мин до пары",
-                () -> minutes("Когда будить", "wakeLead", store.wakeLead(), 360));
-        option(names, actions, "Добавить виджет", this::pinWidget);
-        option(names, actions, "Экспериментальные функции", this::experiments);
-        if (GlyphProgress.supported()) option(names, actions, "Glyph · " + (store.glyph() ? "включён" : "выключен"), this::glyphSettings);
-        option(names, actions, "Открыть сайт расписания ТИУ", () -> openLink(OFFICIAL));
-        option(names, actions, "О приложении", this::about);
-        new AlertDialog.Builder(this).setTitle("Настройки").setItems(names.toArray(new String[0]),
-                (dialog, which) -> actions.get(which).run()).setNegativeButton("Закрыть", null).show();
+        agendaScroll = scroll.getScrollY();
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, settingsBack);
+        openSettingsPage("settings");
     }
 
-    private static void option(List<String> names, List<Runnable> actions, String name, Runnable action) {
-        names.add(name);
-        actions.add(action);
+    private void openSettingsPage(String value) {
+        settingsPage = value;
+        renderSettings(false);
+    }
+
+    private void backFromSettings() {
+        if (!"settings".equals(settingsPage)) {
+            openSettingsPage("settings");
+            return;
+        }
+        getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(settingsBack);
+        settingsPage = "";
+        renderSchedule(agendaScroll);
+    }
+
+    // Android 13 can still dispatch a hardware back key through this method.
+    @android.annotation.SuppressLint("GestureBackNavigation")
+    @Override public void onBackPressed() {
+        if (settingsPage.isEmpty()) super.onBackPressed();
+        else backFromSettings();
+    }
+
+    private void renderSettings(boolean keepScroll) {
+        beginPage(keepScroll && scroll != null ? scroll.getScrollY() : 0);
+        featuredStatus = null;
+        featuredProgress = null;
+        String heading = switch (settingsPage) {
+            case "widgets" -> "Виджеты";
+            case "alerts" -> "Уведомления и будильники";
+            case "data" -> "Данные расписания";
+            default -> "Настройки";
+        };
+        var top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        var back = button("‹", false, this::backFromSettings);
+        back.setContentDescription("Назад");
+        top.addView(back);
+        var title = label(heading, 26, palette.text, true);
+        title.setAccessibilityHeading(true);
+        var space = new LinearLayout.LayoutParams(0, -2, 1);
+        space.setMarginStart(dp(13));
+        top.addView(title, space);
+        page.addView(top);
+
+        Schedule schedule = store.read();
+        switch (settingsPage) {
+            case "widgets" -> {
+                var controls = settingsCard();
+                setting(controls, "Добавить виджет", "Выбор стартового формата", this::pinWidget);
+                setting(controls, "Настроить установленные", "У каждого виджета свои параметры", this::configureWidgets);
+            }
+            case "alerts" -> {
+                var controls = settingsCard();
+                setting(controls, "Напоминания о парах", store.notifications() ? "За " + store.lead() + " мин" : "Выключены",
+                        this::reminderSettings);
+                Instant now = Instant.now();
+                var first = firstClassForAlarm(schedule, now);
+                if (first != null && !schedule.demo) {
+                    setting(controls, "Будильник к первой паре", first.start().format(Schedule.DATE) + " · " + first.time(),
+                            () -> clock(first));
+                    setting(controls, "Когда будить", "За " + store.wakeLead() + " мин до пары",
+                            () -> minutes("Когда будить", "wakeLead", store.wakeLead(), 360));
+                }
+                setting(controls, "Экспериментальные функции", "Будильники по чётным и нечётным неделям", this::experiments);
+            }
+            case "data" -> {
+                var controls = settingsCard();
+                if (busy) add(page, label("Обновляю расписание…", 14, palette.muted, false), 10);
+                if (!store.feed().isEmpty()) {
+                    setting(controls, "Обновить расписание", "", this::refresh);
+                    if (store.feed().startsWith(OFFICIAL + "schedule/group/")) {
+                        setting(controls, "Эта группа на сайте ТИУ", schedule.group, () -> openLink(store.feed()));
+                    }
+                }
+                setting(controls, "Каталог групп", "", this::catalogSettings);
+                setting(controls, "Открыть файл расписания", "Импорт JSON", this::importSchedule);
+                if (!schedule.group.isEmpty() && !schedule.demo) {
+                    setting(controls, "Экспорт расписания в JSON", "", this::exportSchedule);
+                }
+                setting(controls, "Сайт расписания ТИУ", "", () -> openLink(OFFICIAL));
+            }
+            default -> {
+                var personalize = settingsCard();
+                setting(personalize, "Виджеты", "Содержимое, оформление и размер текста", () -> openSettingsPage("widgets"));
+                int theme = java.util.Arrays.asList(ThemePalette.KEYS).indexOf(store.theme());
+                setting(personalize, "Тема оформления", ThemePalette.LABELS[Math.max(theme, 0)], this::themeSettings);
+                if (!schedule.subgroups().isEmpty()) {
+                    String subgroup = store.subgroup().isBlank() ? "Вся группа" : "Подгруппа " + store.subgroup();
+                    setting(personalize, "Моя подгруппа", subgroup, this::subgroup);
+                }
+                if (GlyphProgress.supported()) {
+                    setting(personalize, "Glyph", store.glyph() ? "Включён" : "Выключен", this::glyphSettings);
+                }
+                var tools = settingsCard();
+                setting(tools, "Уведомления и будильники", "", () -> openSettingsPage("alerts"));
+                setting(tools, "Данные расписания", "", () -> openSettingsPage("data"));
+                setting(tools, "О приложении", "", this::about);
+            }
+        }
+    }
+
+    private Schedule.Lesson firstClassForAlarm(Schedule schedule, Instant now) {
+        var lessons = schedule.day(date, store.subgroup());
+        return lessons.isEmpty() || !lessons.get(0).starts().isAfter(now)
+                ? firstUpcomingDay(schedule, now) : lessons.get(0);
+    }
+
+    private LinearLayout settingsCard() {
+        var panel = column();
+        panel.setBackground(shape(palette.card, 21));
+        pad(panel, 8, 4, 8, 4);
+        add(page, panel, 15);
+        return panel;
+    }
+
+    private void setting(LinearLayout panel, String name, String detail, Runnable action) {
+        var line = row();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        line.setMinimumHeight(dp(56));
+        pad(line, 12, 9, 10, 9);
+        line.setBackground(new RippleDrawable(ColorStateList.valueOf(0x247f7f7f), null, shape(0xffffffff, 12)));
+        var wording = column();
+        wording.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        wording.addView(label(name, 16, palette.text, true));
+        if (!detail.isBlank()) add(wording, label(detail, 13, palette.muted, false), 3);
+        line.addView(wording, new LinearLayout.LayoutParams(0, -2, 1));
+        var arrow = label("›", 22, palette.muted, false);
+        arrow.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        line.addView(arrow);
+        line.setContentDescription(detail.isBlank() ? name : name + ". " + detail);
+        line.setFocusable(true);
+        line.setOnClickListener(v -> action.run());
+        panel.addView(line, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private void subgroup() {
@@ -539,6 +714,7 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Подгруппа")
                 .setSingleChoiceItems(choices.toArray(new String[0]), current, (dialog, which) -> {
                     store.prefs.edit().putString("subgroup", which == 0 ? "" : available.get(which - 1)).apply();
+                    viewedSubgroup = null;
                     ScheduleEvents.run(this, false);
                     render(true);
                     dialog.dismiss();
@@ -647,7 +823,7 @@ public final class MainActivity extends Activity {
     private void about() {
         new AlertDialog.Builder(this).setTitle("О приложении")
                 .setMessage("Пары ТИУ " + BuildConfig.VERSION_NAME + "\n"
-                        + "Исходный код доступен по лицензии Apache 2.0.\n\n"
+                        + "Исходный код доступен по лицензии GNU GPL v3.\n\n"
                         + "Предложения и замечания можно отправить @gnomecore.")
                 .setPositiveButton("Предложить идею", (dialog, choice) -> openLink("https://t.me/gnomecore"))
                 .setNeutralButton("Исходный код", (dialog, choice) ->
@@ -668,10 +844,25 @@ public final class MainActivity extends Activity {
             toast("Добавьте виджет через меню домашнего экрана");
             return;
         }
-        var types = Widgets.Kind.values();
-        String[] titles = java.util.Arrays.stream(types).map(item -> getString(item.title)).toArray(String[]::new);
+        var types = Widgets.Kind.providers();
+        String[] titles = types.stream().map(item -> getString(item.title)).toArray(String[]::new);
         new AlertDialog.Builder(this).setTitle("Виджеты ТИУ").setItems(titles,
-                (dialog, choice) -> manager.requestPinAppWidget(new ComponentName(this, types[choice].provider), null, null))
+                (dialog, choice) -> manager.requestPinAppWidget(new ComponentName(this, types.get(choice).provider), null, null))
+                .setNegativeButton("Закрыть", null).show();
+    }
+
+    private void configureWidgets() {
+        var installed = Widgets.installed(this);
+        if (installed.isEmpty()) {
+            toast("Добавь виджет на главный экран");
+            return;
+        }
+        String[] names = installed.stream().map(entry -> {
+            var options = WidgetOptions.load(this, entry.id(), entry.kind());
+            return options.title().isBlank() ? getString(options.kind().title) : options.title();
+        }).toArray(String[]::new);
+        new AlertDialog.Builder(this).setTitle("Установленные виджеты").setItems(names, (dialog, which) ->
+                startActivity(WidgetConfigurationActivity.intent(this, installed.get(which).id())))
                 .setNegativeButton("Закрыть", null).show();
     }
 
@@ -819,7 +1010,9 @@ public final class MainActivity extends Activity {
         label.setText(value);
         label.setTextSize(size);
         label.setTextColor(color);
-        if (bold) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (palette == ThemePalette.MONO && size <= 14) {
+            label.setTypeface(Typeface.MONOSPACE, bold ? Typeface.BOLD : Typeface.NORMAL);
+        } else if (bold) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         return label;
     }
 

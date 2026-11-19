@@ -74,7 +74,7 @@ final class WeekAlarmSettings {
         header.addView(title);
         var statusView = new android.widget.TextView(activity);
         statusView.setPadding(0, inset / 3, 0, 0);
-        statusView.setText(status + "\nВремя телефона · чётность по календарю ТИУ");
+        statusView.setText(activity.getString(R.string.week_alarm_status, status));
         statusView.setTextAppearance(android.R.style.TextAppearance_Material_Body1);
         header.addView(statusView);
         new AlertDialog.Builder(activity)

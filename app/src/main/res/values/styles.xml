@@ -2,6 +2,9 @@
     <string name="app_name">Пары ТИУ</string>
     <string name="widget_next">Ближайшая пара · ТИУ</string>
     <string name="widget_day">Пары на день · ТИУ</string>
+    <string name="widget_today">Пары на сегодня · ТИУ</string>
+    <string name="widget_opacity">Непрозрачность фона · %1$d%%</string>
+    <string name="week_alarm_status">%1$s\nВремя телефона · чётность по календарю ТИУ</string>
     <string name="widget_tomorrow">Пары на завтра · ТИУ</string>
     <string name="widget_week">Расписание на 7 дней · ТИУ</string>
     <string name="widget_progress">Прогресс пары · ТИУ</string>

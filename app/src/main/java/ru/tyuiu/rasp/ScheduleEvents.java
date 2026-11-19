@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.Intent;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 
@@ -17,6 +18,8 @@ public final class ScheduleEvents extends BroadcastReceiver {
     private static final String TICK = "ru.tyuiu.rasp.TICK";
     private static final String CHANNEL = "classes";
     static final String OPEN_VIEW = "view";
+    static final String OPEN_DATE = "widget_date";
+    static final String OPEN_SUBGROUP = "widget_subgroup";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -37,6 +40,14 @@ public final class ScheduleEvents extends BroadcastReceiver {
         };
         return PendingIntent.getActivity(context, request, new Intent(context, MainActivity.class)
                 .putExtra(OPEN_VIEW, view).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
+    static PendingIntent openWidget(Context context, int widget, String view, LocalDate date, String subgroup) {
+        return PendingIntent.getActivity(context, widget, new Intent(context, MainActivity.class)
+                .setAction("ru.tyuiu.rasp.OPEN_WIDGET")
+                .putExtra(OPEN_VIEW, view).putExtra(OPEN_DATE, date.toString()).putExtra(OPEN_SUBGROUP, subgroup)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
@@ -64,8 +75,8 @@ public final class ScheduleEvents extends BroadcastReceiver {
         var today = now.atZone(Schedule.ZONE).toLocalDate();
         long next = widgets.any() ? today.plusDays(1).atStartOfDay(Schedule.ZONE)
                 .toInstant().toEpochMilli() : Long.MAX_VALUE;
-        if (widgets.any()) {
-            Instant last = schedule.lastEnd(today, store.subgroup());
+        for (String subgroup : widgets.rolling()) {
+            Instant last = schedule.lastEnd(today, subgroup);
             if (last != null && last.plusSeconds(7200).isAfter(now)) {
                 next = Math.min(next, last.plusSeconds(7200).toEpochMilli());
             }
@@ -75,14 +86,15 @@ public final class ScheduleEvents extends BroadcastReceiver {
         var keep = new HashSet<String>();
         boolean fresh = store.feed().isEmpty() || timestamp - store.lastSync() <= 48 * 3600_000L;
         for (Schedule.Lesson lesson : schedule.lessons) {
-            if (!Schedule.matches(lesson, store.subgroup()) || !lesson.ends().isAfter(now)) continue;
-            String key = lesson.key();
-            if (sent.contains(key)) keep.add(key);
-            if (widgets.any()) {
+            if (!lesson.ends().isAfter(now)) continue;
+            if (widgets.tracks(lesson)) {
                 if (lesson.starts().isAfter(now)) next = Math.min(next, lesson.starts().toEpochMilli());
-                else if (widgets.progress()) next = Math.min(next, timestamp + 5 * 60_000L);
+                else if (widgets.tracksProgress(lesson)) next = Math.min(next, timestamp + 5 * 60_000L);
                 next = Math.min(next, lesson.ends().toEpochMilli());
             }
+            if (!Schedule.matches(lesson, store.subgroup())) continue;
+            String key = lesson.key();
+            if (sent.contains(key)) keep.add(key);
             if (!reminders || !fresh || sent.contains(key) || !lesson.starts().isAfter(now)) continue;
             long due = lesson.starts().minus(store.lead(), ChronoUnit.MINUTES).toEpochMilli();
             if (due > timestamp) {
