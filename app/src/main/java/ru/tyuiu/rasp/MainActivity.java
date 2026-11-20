@@ -72,6 +72,8 @@ public final class MainActivity extends Activity {
     private android.content.SharedPreferences.OnSharedPreferenceChangeListener preferenceListener;
     private boolean busy;
     private boolean foreground;
+    private boolean glyphTesting;
+    private String glyphStatus = "";
 
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
@@ -89,7 +91,7 @@ public final class MainActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         store = new ScheduleStore(this);
         palette = ThemePalette.resolve(this, store.theme());
-        if (palette == ThemePalette.LIGHT) setTheme(R.style.AppThemeLight);
+        if (palette.light()) setTheme(R.style.AppThemeLight);
         super.onCreate(state);
         getWindow().setDecorFitsSystemWindows(false);
         glyph = new GlyphProgress(this);
@@ -113,7 +115,7 @@ public final class MainActivity extends Activity {
         if (insets != null) {
             int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                     | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-            insets.setSystemBarsAppearance(palette == ThemePalette.LIGHT ? mask : 0, mask);
+            insets.setSystemBarsAppearance(palette.light() ? mask : 0, mask);
         }
         if (state == null && "week-alarms".equals(getIntent().getStringExtra(ScheduleEvents.OPEN_VIEW))) {
             WeekAlarmSettings.show(this);
@@ -573,7 +575,9 @@ public final class MainActivity extends Activity {
 
     private void backFromSettings() {
         if (!"settings".equals(settingsPage)) {
+            boolean stopPreview = "glyph".equals(settingsPage) && glyphTesting;
             openSettingsPage("settings");
+            if (stopPreview) glyph.stop();
             return;
         }
         getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(settingsBack);
@@ -596,6 +600,8 @@ public final class MainActivity extends Activity {
             case "widgets" -> "Виджеты";
             case "alerts" -> "Уведомления и будильники";
             case "data" -> "Данные расписания";
+            case "themes" -> "Оформление";
+            case "glyph" -> "Glyph Interface";
             default -> "Настройки";
         };
         var top = row();
@@ -619,18 +625,21 @@ public final class MainActivity extends Activity {
             }
             case "alerts" -> {
                 var controls = settingsCard();
+                setting(controls, "Будильники по учебным неделям", "Время подъёма для каждого дня",
+                        () -> WeekAlarmSettings.show(this));
                 setting(controls, "Напоминания о парах", store.notifications() ? "За " + store.lead() + " мин" : "Выключены",
                         this::reminderSettings);
                 Instant now = Instant.now();
                 var first = firstClassForAlarm(schedule, now);
                 if (first != null && !schedule.demo) {
-                    setting(controls, "Будильник к первой паре", first.start().format(Schedule.DATE) + " · " + first.time(),
+                    setting(controls, "Разовый будильник к первой паре", first.start().format(Schedule.DATE) + " · " + first.time(),
                             () -> clock(first));
                     setting(controls, "Когда будить", "За " + store.wakeLead() + " мин до пары",
                             () -> minutes("Когда будить", "wakeLead", store.wakeLead(), 360));
                 }
-                setting(controls, "Экспериментальные функции", "Будильники по чётным и нечётным неделям", this::experiments);
             }
+            case "themes" -> themeGallery();
+            case "glyph" -> glyphControls();
             case "data" -> {
                 var controls = settingsCard();
                 if (busy) add(page, label("Обновляю расписание…", 14, palette.muted, false), 10);
@@ -651,13 +660,13 @@ public final class MainActivity extends Activity {
                 var personalize = settingsCard();
                 setting(personalize, "Виджеты", "Содержимое, оформление и размер текста", () -> openSettingsPage("widgets"));
                 int theme = java.util.Arrays.asList(ThemePalette.KEYS).indexOf(store.theme());
-                setting(personalize, "Тема оформления", ThemePalette.LABELS[Math.max(theme, 0)], this::themeSettings);
+                setting(personalize, "Тема оформления", ThemePalette.LABELS[Math.max(theme, 0)], () -> openSettingsPage("themes"));
                 if (!schedule.subgroups().isEmpty()) {
                     String subgroup = store.subgroup().isBlank() ? "Вся группа" : "Подгруппа " + store.subgroup();
                     setting(personalize, "Моя подгруппа", subgroup, this::subgroup);
                 }
                 if (GlyphProgress.supported()) {
-                    setting(personalize, "Glyph", store.glyph() ? "Включён" : "Выключен", this::glyphSettings);
+                    setting(personalize, "Glyph Interface", store.glyph() ? "Включён" : "Выключен", () -> openSettingsPage("glyph"));
                 }
                 var tools = settingsCard();
                 setting(tools, "Уведомления и будильники", "", () -> openSettingsPage("alerts"));
@@ -752,11 +761,6 @@ public final class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] result) {
         super.onRequestPermissionsResult(requestCode, permissions, result);
-        if (requestCode == WeekAlarmSettings.NOTIFICATION_PERMISSION) {
-            WeekAlarms.reschedule(this);
-            WeekAlarmSettings.show(this);
-            return;
-        }
         if (requestCode == NOTIFICATIONS && result.length > 0) {
             if (result[0] == PackageManager.PERMISSION_GRANTED) {
                 store.prefs.edit().putBoolean("notifications", true).apply();
@@ -831,13 +835,6 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("Закрыть", null).show();
     }
 
-    private void experiments() {
-        new AlertDialog.Builder(this).setTitle("Экспериментальные функции")
-                .setItems(new String[]{"Будильники по учебным неделям"},
-                        (dialog, choice) -> WeekAlarmSettings.show(this))
-                .setNegativeButton("Закрыть", null).show();
-    }
-
     private void pinWidget() {
         AppWidgetManager manager = AppWidgetManager.getInstance(this);
         if (!manager.isRequestPinAppWidgetSupported()) {
@@ -866,26 +863,81 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("Закрыть", null).show();
     }
 
-    private void themeSettings() {
-        int current = java.util.Arrays.asList(ThemePalette.KEYS).indexOf(store.theme());
-        new AlertDialog.Builder(this).setTitle("Тема оформления")
-                .setSingleChoiceItems(ThemePalette.LABELS, current, (dialog, choice) -> {
-                    dialog.dismiss();
-                    if (choice == current) return;
-                    store.prefs.edit().putString("theme", ThemePalette.KEYS[choice]).apply();
-                    ScheduleEvents.run(this, false);
-                    recreate();
-                }).setNegativeButton("Закрыть", null).show();
+    private void themeGallery() {
+        var config = getResources().getConfiguration();
+        int columns = config.screenWidthDp >= 340 && config.fontScale <= 1.3f ? 2 : 1;
+        for (int index = 0; index < ThemePalette.KEYS.length;) {
+            var tiles = row();
+            for (int column = 0; column < columns; column++) {
+                var space = new LinearLayout.LayoutParams(0, -1, 1);
+                if (column != 0) space.setMarginStart(dp(9));
+                if (index == ThemePalette.KEYS.length) tiles.addView(new View(this), space);
+                else {
+                    tiles.addView(themeTile(ThemePalette.KEYS[index], ThemePalette.LABELS[index]), space);
+                    index++;
+                }
+            }
+            add(page, tiles, 10);
+        }
     }
 
-    private void glyphSettings() {
+    private View themeTile(String key, String name) {
+        ThemePalette preview = ThemePalette.resolve(this, key);
+        boolean selected = key.equals(store.theme());
+        var tile = column();
+        pad(tile, 13, 12, 13, 12);
+        var background = shape(preview.card, 17);
+        background.setStroke(dp(selected ? 2 : 1), selected ? preview.accent : preview.control);
+        tile.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3d7f7f7f), background, null));
+        var sample = label("08:00", 26, preview.accent, true);
+        DisplayFonts.time(sample, preview);
+        DisplayFonts.heading(sample, preview);
+        var title = label(name, 15, preview.text, true);
+        tile.addView(sample);
+        add(tile, title, 5);
+        tile.setContentDescription(name + (selected ? " · выбрана" : ""));
+        tile.setSelected(selected);
+        tile.setFocusable(true);
+        tile.setOnClickListener(view -> {
+            if (selected) return;
+            store.prefs.edit().putString("theme", key).apply();
+            ScheduleEvents.run(this, false);
+            recreate();
+        });
+        return tile;
+    }
+
+    private void glyphControls() {
+        var controls = settingsCard();
         boolean enabled = store.glyph();
-        new AlertDialog.Builder(this).setTitle("Прогресс пары на Glyph")
-                .setMessage("Подсветка Nothing Phone (3a) показывает ход текущей пары, пока расписание открыто.")
-                .setPositiveButton(enabled ? "Выключить" : "Включить", (dialog, which) -> {
-                    store.prefs.edit().putBoolean("glyph", !enabled).apply();
-                    updateProgress(Instant.now());
-                }).setNegativeButton("Закрыть", null).show();
+        setting(controls, "Прогресс пары", enabled ? "Включён" : "Выключен", () -> {
+            store.prefs.edit().putBoolean("glyph", !enabled).apply();
+            renderSettings(true);
+            updateProgress(Instant.now());
+        });
+        setting(controls, "Проверить подсветку", glyphTesting ? "Идёт проверка…" : "На три секунды", () -> {
+            if (glyphTesting) return;
+            glyphTesting = true;
+            glyphStatus = "";
+            renderSettings(true);
+            glyph.preview(result -> {
+                glyphTesting = false;
+                glyphStatus = switch (result) {
+                    case LIT -> "Проверка завершена. Подсветка получила команду.";
+                    case NO_SERVICE -> "Служба Glyph не ответила. Проверь, включён ли Glyph Interface в настройках телефона.";
+                    case REJECTED -> "Nothing OS отклонила доступ к Glyph. Проверь настройки интерфейса и версию Nothing OS.";
+                    case ERROR -> "Не удалось запустить подсветку. Попробуй проверить ещё раз.";
+                    case CANCELLED -> "";
+                };
+                if (foreground && "glyph".equals(settingsPage)) renderSettings(true);
+            });
+        });
+        add(page, label("Прогресс виден во время пары, пока приложение открыто.", 14, palette.muted, false), 12);
+        if (!glyphStatus.isEmpty()) {
+            var status = label(glyphStatus, 14, palette.text, false);
+            status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+            add(page, status, 10);
+        }
     }
 
     private void importSchedule() {
@@ -1013,6 +1065,10 @@ public final class MainActivity extends Activity {
         if (palette == ThemePalette.MONO && size <= 14) {
             label.setTypeface(Typeface.MONOSPACE, bold ? Typeface.BOLD : Typeface.NORMAL);
         } else if (bold) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (size >= 26) DisplayFonts.heading(label, palette);
+        if (palette == ThemePalette.MONO && value.matches("[0-9]{2}:[0-9]{2}(–[0-9]{2}:[0-9]{2})?")) {
+            DisplayFonts.time(label, palette);
+        }
         return label;
     }
 

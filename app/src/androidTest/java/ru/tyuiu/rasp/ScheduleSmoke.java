@@ -81,6 +81,14 @@ public final class ScheduleSmoke extends Instrumentation {
             var evenAlarm = monday.plusWeeks(1).atTime(8, 15).atZone(Schedule.ZONE).toInstant();
             require(oddAlarm.equals(WeekAlarms.next(odd, even, before, Schedule.ZONE)), "Odd week alarm time");
             require(evenAlarm.equals(WeekAlarms.next(odd, even, oddAlarm, Schedule.ZONE)), "Even week alarm time");
+            var profile = getContext().getSharedPreferences("alarm_profile_test", Context.MODE_PRIVATE);
+            profile.edit().clear().putInt(WeekAlarms.key(false, DayOfWeek.MONDAY), 420).apply();
+            require(WeekAlarms.dayEnabled(profile, false, DayOfWeek.MONDAY), "Legacy alarm stays enabled");
+            WeekAlarms.saveDay(profile, false, DayOfWeek.MONDAY, 420, false);
+            require(WeekAlarms.dayTime(profile, false, DayOfWeek.MONDAY) == 420
+                    && WeekAlarms.next(profile, before, Schedule.ZONE) == null, "Paused alarm keeps its time");
+            WeekAlarms.saveDay(profile, false, DayOfWeek.MONDAY, 420, true);
+            require(oddAlarm.equals(WeekAlarms.next(profile, before, Schedule.ZONE)), "Re-enabling uses the saved time");
             if (officialNetwork) {
                 var group = Schedule.groups(Schedule.https(OfficialTiu.HOME)).stream()
                         .findFirst().orElseThrow();
@@ -147,7 +155,8 @@ public final class ScheduleSmoke extends Instrumentation {
                     require(widgets.bindAppWidgetIdIfAllowed(id, new ComponentName(context, type)),
                             "Grant widget binding to the emulator first");
                     waitForIdleSync();
-                    require(Widgets.updateAll(context, store, widgetSchedule, Instant.now()).any(), "Widget update");
+                    Instant renderedAt = Instant.now();
+                    require(Widgets.updateAll(context, store, widgetSchedule, renderedAt).any(), "Widget update");
                     var mounted = new java.util.concurrent.atomic.AtomicReference<AppWidgetHostView>();
                     runOnMainSync(() -> mounted.set(host.createView(context, id, widgets.getAppWidgetInfo(id))));
                     waitForIdleSync();
@@ -160,10 +169,14 @@ public final class ScheduleSmoke extends Instrumentation {
                             yield date.format(Schedule.DATE) + " · " + schedule.group;
                         }
                     };
+                    Schedule renderedSchedule = widgetSchedule;
                     runOnMainSync(() -> {
                         require(hasText(mounted.get(), expected), "Rendered widget " + type.getSimpleName());
                         if (kind == Widgets.Kind.PROGRESS) {
-                            ProgressBar progress = mounted.get().findViewById(R.id.widget_progress);
+                            WidgetOptions options = WidgetOptions.load(context, id, kind);
+                            var view = Widgets.make(context, store, renderedSchedule, renderedAt, id, options, kind.size)
+                                    .apply(context, null);
+                            ProgressBar progress = view.findViewById(R.id.widget_progress);
                             require(progress.getVisibility() == View.VISIBLE && progress.getProgress() > 0,
                                     "Visible class progress (visibility=" + progress.getVisibility()
                                             + ", progress=" + progress.getProgress() + ", indeterminate="

@@ -28,6 +28,21 @@ final class WeekAlarms {
         return (even ? "even_" : "odd_") + day.getValue();
     }
 
+    static int dayTime(SharedPreferences prefs, boolean even, DayOfWeek day) {
+        int minute = prefs.getInt(key(even, day), -1);
+        return minute >= 0 && minute < 1440 ? minute : -1;
+    }
+
+    static boolean dayEnabled(SharedPreferences prefs, boolean even, DayOfWeek day) {
+        int minute = dayTime(prefs, even, day);
+        return minute >= 0 && prefs.getBoolean(key(even, day) + "_enabled", true);
+    }
+
+    static void saveDay(SharedPreferences prefs, boolean even, DayOfWeek day, int minute, boolean enabled) {
+        String key = key(even, day);
+        prefs.edit().putInt(key, minute).putBoolean(key + "_enabled", enabled).apply();
+    }
+
     static Instant next(int[] odd, int[] even, Instant now, ZoneId zone) {
         var today = now.atZone(zone).toLocalDate();
         for (int offset = 0; offset <= 14; offset++) {
@@ -45,8 +60,8 @@ final class WeekAlarms {
         int[] odd = new int[7];
         int[] even = new int[7];
         for (DayOfWeek day : DayOfWeek.values()) {
-            odd[day.getValue() - 1] = prefs.getInt(key(false, day), -1);
-            even[day.getValue() - 1] = prefs.getInt(key(true, day), -1);
+            odd[day.getValue() - 1] = dayEnabled(prefs, false, day) ? dayTime(prefs, false, day) : -1;
+            even[day.getValue() - 1] = dayEnabled(prefs, true, day) ? dayTime(prefs, true, day) : -1;
         }
         return next(odd, even, now, zone);
     }

@@ -58,7 +58,7 @@ public final class WidgetConfigurationActivity extends Activity {
     @Override protected void onCreate(Bundle state) {
         store = new ScheduleStore(this);
         palette = ThemePalette.resolve(this, store.theme());
-        if (palette == ThemePalette.LIGHT) setTheme(R.style.AppThemeLight);
+        if (palette.light()) setTheme(R.style.AppThemeLight);
         super.onCreate(state);
         id = getIntent().getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID);
         var result = new Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id);

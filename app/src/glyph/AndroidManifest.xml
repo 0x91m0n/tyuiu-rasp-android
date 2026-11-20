@@ -1,5 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
+    <queries><package android:name="com.nothing.thirdparty" /></queries>
     <application>
         <meta-data android:name="NothingKey" android:value="${nothingKey}" />
     </application>
