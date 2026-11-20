@@ -3,5 +3,14 @@
     <queries><package android:name="com.nothing.thirdparty" /></queries>
     <application>
         <meta-data android:name="NothingKey" android:value="${nothingKey}" />
+        <activity android:name=".GlyphSessionActivity" android:exported="false"
+            android:excludeFromRecents="true" android:launchMode="singleTask"
+            android:taskAffinity="ru.tyuiu.rasp.glyph" android:theme="@style/GlyphSessionTheme" />
+        <service android:name=".GlyphTile" android:label="@string/glyph_tile"
+            android:icon="@drawable/ic_glyph_tile" android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+            <meta-data android:name="android.service.quicksettings.ACTIVE_TILE" android:value="true" />
+        </service>
     </application>
 </manifest>

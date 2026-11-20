@@ -1,0 +1,10 @@
+<resources>
+    <string name="glyph_tile">Glyph пары</string>
+    <string name="glyph_session_until">%1$s · до %2$s</string>
+    <style name="GlyphSessionTheme" parent="android:style/Theme.Material.Dialog.NoActionBar">
+        <item name="android:windowCloseOnTouchOutside">false</item>
+        <item name="android:colorAccent">#FFFFFF</item>
+        <item name="android:windowMinWidthMajor">320dp</item>
+        <item name="android:windowMinWidthMinor">85%</item>
+    </style>
+</resources>

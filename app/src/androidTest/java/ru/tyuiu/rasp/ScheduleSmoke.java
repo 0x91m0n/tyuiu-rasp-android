@@ -81,6 +81,7 @@ public final class ScheduleSmoke extends Instrumentation {
             var evenAlarm = monday.plusWeeks(1).atTime(8, 15).atZone(Schedule.ZONE).toInstant();
             require(oddAlarm.equals(WeekAlarms.next(odd, even, before, Schedule.ZONE)), "Odd week alarm time");
             require(evenAlarm.equals(WeekAlarms.next(odd, even, oddAlarm, Schedule.ZONE)), "Even week alarm time");
+            checkRefreshPlan();
             var profile = getContext().getSharedPreferences("alarm_profile_test", Context.MODE_PRIVATE);
             profile.edit().clear().putInt(WeekAlarms.key(false, DayOfWeek.MONDAY), 420).apply();
             require(WeekAlarms.dayEnabled(profile, false, DayOfWeek.MONDAY), "Legacy alarm stays enabled");
@@ -137,6 +138,8 @@ public final class ScheduleSmoke extends Instrumentation {
             require(java.util.Arrays.stream(active).filter(n -> lesson.key().equals(n.getTag())).count() == 1,
                     "Reminder delivery and deduplication");
             notifications.cancel(lesson.key(), 1);
+            checkFavorites(screen, store, withGap, lesson, other);
+            runOnMainSync(() -> checkDottedHeading(context));
 
             AppWidgetManager widgets = context.getSystemService(AppWidgetManager.class);
             runOnMainSync(host::startListening);
@@ -173,14 +176,15 @@ public final class ScheduleSmoke extends Instrumentation {
                     runOnMainSync(() -> {
                         require(hasText(mounted.get(), expected), "Rendered widget " + type.getSimpleName());
                         if (kind == Widgets.Kind.PROGRESS) {
-                            WidgetOptions options = WidgetOptions.load(context, id, kind);
+                            WidgetOptions options = WidgetOptions.decode("{}", kind);
                             var view = Widgets.make(context, store, renderedSchedule, renderedAt, id, options, kind.size)
                                     .apply(context, null);
                             ProgressBar progress = view.findViewById(R.id.widget_progress);
                             require(progress.getVisibility() == View.VISIBLE && progress.getProgress() > 0,
                                     "Visible class progress (visibility=" + progress.getVisibility()
                                             + ", progress=" + progress.getProgress() + ", indeterminate="
-                                            + progress.isIndeterminate() + ")");
+                                            + progress.isIndeterminate() + ", options=" + options
+                                            + ", start=" + activeLesson.starts() + ", now=" + renderedAt + ")");
                         }
                     });
                 } finally {
@@ -193,7 +197,7 @@ public final class ScheduleSmoke extends Instrumentation {
                 runOnMainSync(() -> screen.moveTaskToBack(true));
                 checkAlarmRing(context, notifications);
             }
-            result.putString("stream", "\nSchedule, subgroup preview, settings, reminders, five widgets and independent widget options passed.\n"
+            result.putString("stream", "\nSchedule, favorites, Cyrillic heading, refresh timing, Glyph timer and widgets passed.\n"
                     + (officialNetwork ? "The official catalog and group timetable loaded on Android.\n" : "")
                     + (ringAlarm ? "The exact week alarm fired, showed its stop action and scheduled the next week.\n" : ""));
         } catch (Throwable failure) {
@@ -206,8 +210,75 @@ public final class ScheduleSmoke extends Instrumentation {
             for (var entry : old.entrySet()) restore(editor, entry.getKey(), entry.getValue());
             editor.commit();
             ScheduleEvents.run(context, false);
+            RefreshJob.configure(context);
         }
         finish(status, result);
+    }
+
+    private static void checkRefreshPlan() {
+        var day = LocalDate.of(2026, 11, 20);
+        var noon = day.atTime(12, 0).atZone(Schedule.ZONE).toInstant();
+        var nextNight = day.plusDays(1).atTime(3, 0).atZone(Schedule.ZONE).toInstant();
+        require(nextNight.equals(RefreshJob.nextUpdate(noon.toEpochMilli(), noon)), "Plan the next Tyumen night");
+        var recent = nextNight.minusSeconds(60);
+        var maxAge = recent.plus(1, ChronoUnit.DAYS);
+        require(maxAge.equals(RefreshJob.nextUpdate(recent.toEpochMilli(), recent)), "Skip an immediate second refresh");
+        require(maxAge.equals(RefreshJob.nextUpdate(recent.toEpochMilli(), maxAge.plusSeconds(1))),
+                "Overdue data is ready for catch-up");
+        var glyph = new GlyphOptions(GlyphOptions.Effect.REMAINING, 50, GlyphOptions.Cutoff.FIVE, true, false);
+        require(glyph.litSegments(75) == 5 && glyph.stopAt(noon, noon.plusSeconds(600)).equals(noon.plusSeconds(300)),
+                "Glyph remaining segments and timer");
+        require(glyph.stopAt(noon, noon.plusSeconds(90)).equals(noon.plusSeconds(90)),
+                "Glyph always stops by class end");
+    }
+
+    private void checkFavorites(Activity screen, ScheduleStore store, Schedule schedule,
+                                Schedule.Lesson personal, Schedule.Lesson alternate) {
+        var myFeed = "https://example.test/personal";
+        var otherFeed = "https://example.test/favorite";
+        var favorite = new Schedule("РГМ-26-1", "", List.of(alternate), false);
+        runOnMainSync(() -> {
+            Instant updated = Instant.now();
+            store.prefs.edit().remove("favorites").apply();
+            try { store.select(new ScheduleStore.SavedGroup(myFeed, schedule, updated.toEpochMilli())); }
+            catch (java.io.IOException failure) { throw new AssertionError(failure); }
+            View root = screen.getWindow().getDecorView();
+            var favoriteButton = findDescription(root, "Добавить в избранное");
+            require(favoriteButton != null && favoriteButton.performClick(), "Star the personal group");
+            require(store.isFavorite(myFeed), "Favorite remains in preferences");
+            store.toggleFavorite(new ScheduleStore.SavedGroup(otherFeed, favorite, updated.toEpochMilli()));
+            var today = findText(screen.getWindow().getDecorView(), "Сегодня");
+            require(today != null && today.performClick(), "Show today");
+            var chip = findText(screen.getWindow().getDecorView(), favorite.group);
+            require(chip != null && chip.performClick(), "Open a previously saved favorite");
+            View preview = screen.getWindow().getDecorView();
+            require(hasText(preview, alternate.title()) && !hasText(preview, personal.title())
+                    && store.feed().equals(myFeed), "Preview a cached favorite without changing the home group");
+            String footer = "Обновлено · " + updated.atZone(ZoneId.systemDefault())
+                    .format(DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Schedule.RU));
+            require(hasText(preview, footer), "Footer uses the favorite's last refresh time");
+            require(findText(preview, schedule.group).performClick(), "Return to the personal schedule");
+            require(hasText(screen.getWindow().getDecorView(), personal.title()), "Personal schedule restored");
+        });
+    }
+
+    private static void checkDottedHeading(Context context) {
+        var title = new TextView(context);
+        title.setText("Пары ТИУ");
+        DisplayFonts.heading(title, ThemePalette.MONO);
+        String heading = title.getText().toString().replace(" ", "");
+        var glyphs = android.graphics.text.TextRunShaper.shapeTextRun(heading, 0, heading.length(), 0, heading.length(),
+                0, 0, false, title.getPaint());
+        require(heading.equals("ПАРЫТИУ") && glyphs.glyphCount() == heading.length(), "Russian heading uses display glyphs");
+        for (int i = 0; i < glyphs.glyphCount(); i++) {
+            var font = glyphs.getFont(i);
+            var file = font.getFile();
+            var axes = font.getAxes();
+            require(glyphs.getGlyphId(i) != 0 && ((file != null && file.getName().toLowerCase(java.util.Locale.ROOT)
+                    .startsWith("ndot")) || (axes != null && Arrays.stream(axes)
+                    .anyMatch(axis -> "ELSH".equals(axis.getTag()) && axis.getStyleValue() == 8))),
+                    "Actual Cyrillic shape comes from N Dot or circular Handjet");
+        }
     }
 
     private void checkWidgetAgenda(Context context, ScheduleStore store) {

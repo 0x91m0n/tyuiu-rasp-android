@@ -48,6 +48,7 @@ public final class MainActivity extends Activity {
     private static final int IMPORT = 101, EXPORT = 102, NOTIFICATIONS = 103;
     private static final String OFFICIAL = OfficialTiu.HOME;
     private static final DateTimeFormatter FULL_DATE = DateTimeFormatter.ofPattern("EEEE, d MMMM", Schedule.RU);
+    private static final DateTimeFormatter UPDATED = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", Schedule.RU);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService executor = Executors.newSingleThreadExecutor();
     private ScheduleStore store;
@@ -60,6 +61,7 @@ public final class MainActivity extends Activity {
     private boolean followDay = true;
     private boolean week;
     private String viewedSubgroup;
+    private ScheduleStore.SavedGroup otherGroup;
     private String settingsPage = "";
     private int agendaScroll;
     private final OnBackInvokedCallback settingsBack = this::backFromSettings;
@@ -67,6 +69,7 @@ public final class MainActivity extends Activity {
     private ProgressBar featuredProgress;
     private String featuredKey = "";
     private List<Schedule.Group> cachedGroups = List.of();
+    private final java.util.Map<String, Long> previewAttempts = new java.util.HashMap<>();
     private String cachedCatalog = "";
     private long catalogFetchedAt;
     private android.content.SharedPreferences.OnSharedPreferenceChangeListener preferenceListener;
@@ -77,11 +80,11 @@ public final class MainActivity extends Activity {
 
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
-            Schedule schedule = store.read();
+            Schedule schedule = currentSchedule();
             Instant now = Instant.now();
             LocalDate today = Schedule.today();
             String key = featuredKey(schedule.next(now, visibleSubgroup(schedule)), now);
-            boolean switchDay = followDay && !date.equals(schedule.defaultDay(now, store.subgroup()));
+            boolean switchDay = followDay && !date.equals(schedule.defaultDay(now, visibleSubgroup(schedule)));
             if (settingsPage.isEmpty() && (switchDay || !today.equals(shownToday) || !key.equals(featuredKey))) render(!switchDay);
             else updateProgress(now);
             handler.postDelayed(this, 5_000);
@@ -95,6 +98,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().setDecorFitsSystemWindows(false);
         glyph = new GlyphProgress(this);
+        otherGroup = (ScheduleStore.SavedGroup) getLastNonConfigurationInstance();
         date = state == null ? Schedule.today() : LocalDate.parse(state.getString("date", Schedule.today().toString()));
         if (state == null) applyEntry(getIntent());
         else {
@@ -106,7 +110,7 @@ public final class MainActivity extends Activity {
             if (!settingsPage.isEmpty()) getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, settingsBack);
         }
         preferenceListener = (prefs, key) -> {
-            if ("data".equals(key) && foreground && !busy) render(true);
+            if (("data".equals(key) || "lastSync".equals(key)) && foreground && !busy) render(true);
         };
         store.prefs.registerOnSharedPreferenceChangeListener(preferenceListener);
         RefreshJob.configure(this);
@@ -132,6 +136,8 @@ public final class MainActivity extends Activity {
         state.putInt("agendaScroll", agendaScroll);
     }
 
+    @Override public Object onRetainNonConfigurationInstance() { return otherGroup; }
+
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -146,6 +152,7 @@ public final class MainActivity extends Activity {
 
     private void applyEntry(Intent intent) {
         String view = intent.getStringExtra(ScheduleEvents.OPEN_VIEW);
+        otherGroup = null;
         week = "week".equals(view);
         followDay = !"tomorrow".equals(view);
         viewedSubgroup = intent.getStringExtra(ScheduleEvents.OPEN_SUBGROUP);
@@ -167,6 +174,8 @@ public final class MainActivity extends Activity {
         foreground = true;
         ScheduleEvents.run(this, true);
         WeekAlarms.reschedule(this);
+        RefreshJob.configure(this);
+        RefreshJob.catchUp(this);
         render(true);
         handler.post(ticker);
     }
@@ -195,10 +204,10 @@ public final class MainActivity extends Activity {
 
     private void renderSchedule(int scrollY) {
         shownToday = Schedule.today();
-        Schedule schedule = store.read();
+        Schedule schedule = currentSchedule();
         String subgroup = visibleSubgroup(schedule);
         Instant now = Instant.now();
-        if (followDay) date = schedule.defaultDay(now, store.subgroup());
+        if (followDay) date = schedule.defaultDay(now, subgroup);
         Schedule.Lesson next = schedule.next(now, subgroup);
         featuredKey = featuredKey(next, now);
         featuredStatus = null;
@@ -218,7 +227,27 @@ public final class MainActivity extends Activity {
         if (schedule.demo) groupLabel += " · демо";
         var groupButton = button(groupLabel + "  ▾", false, this::chooseGroup);
         if (!group.isEmpty()) groupButton.setContentDescription("Выбрать группу. Сейчас " + groupLabel);
-        add(page, groupButton, 12);
+        var groupRow = row();
+        groupRow.addView(groupButton, new LinearLayout.LayoutParams(0, -2, 1));
+        ScheduleStore.SavedGroup visible = currentGroup();
+        if (!visible.feed().isBlank() && !schedule.demo) {
+            boolean starred = store.isFavorite(visible.feed());
+            var star = button(starred ? "★" : "☆", starred, () -> {
+                store.toggleFavorite(visible);
+                render(true);
+            });
+            star.setTextSize(20);
+            star.setContentDescription(starred ? "Убрать из избранного" : "Добавить в избранное");
+            var space = new LinearLayout.LayoutParams(-2, -2);
+            space.setMarginStart(dp(8));
+            groupRow.addView(star, space);
+        }
+        add(page, groupRow, 12);
+        addFavorites(visible.feed());
+        if (otherGroup != null) {
+            var useGroup = button("Сделать моей группой", false, () -> useAsPersonal(visible));
+            add(page, useGroup, 8);
+        }
         if (busy) {
             var progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
             progress.setIndeterminate(true);
@@ -239,7 +268,8 @@ public final class MainActivity extends Activity {
         if (next != null) {
             boolean active = !next.starts().isAfter(now);
             var featured = box(palette.accent);
-            featuredStatus = label(active ? "СЕЙЧАС ИДЁТ" : "БЛИЖАЙШАЯ ПАРА", 12, palette.onAccent, true);
+            featuredStatus = label(active ? "СЕЙЧАС ИДЁТ" : "БЛИЖАЙШАЯ ПАРА", 13, palette.onAccent, true);
+            DisplayFonts.heading(featuredStatus, palette);
             featured.addView(featuredStatus);
             add(featured, label(next.title(), 25, palette.onAccent, true), 7);
             String day = next.start().toLocalDate().equals(shownToday) ? "" : next.start().format(Schedule.DATE) + " · ";
@@ -261,6 +291,7 @@ public final class MainActivity extends Activity {
         dateRow.addView(previous);
         TextView dateTitle = label(week ? date.format(Schedule.DATE) + " — " + date.plusDays(6).format(Schedule.DATE)
                 : capitalize(date.format(FULL_DATE)), 18, palette.text, true);
+        DisplayFonts.heading(dateTitle, palette);
         dateTitle.setGravity(Gravity.CENTER);
         dateTitle.setOnClickListener(v -> new android.app.DatePickerDialog(this, (picker, year, month, dayOfMonth) -> {
             date = LocalDate.of(year, month + 1, dayOfMonth);
@@ -283,7 +314,7 @@ public final class MainActivity extends Activity {
                     date = target;
                     followDay = false;
                 } else if (!week) {
-                    date = schedule.defaultDay(now, store.subgroup());
+                    date = schedule.defaultDay(now, subgroup);
                     followDay = false;
                 }
                 week = showWeek;
@@ -302,18 +333,18 @@ public final class MainActivity extends Activity {
         if (week) {
             for (int offset = 0; offset < 7; offset++) {
                 LocalDate target = date.plusDays(offset);
-                add(page, label(capitalize(target.format(FULL_DATE)), 18, palette.text, true), 16);
+                var dayHeading = label(capitalize(target.format(FULL_DATE)), 18, palette.text, true);
+                DisplayFonts.heading(dayHeading, palette);
+                add(page, dayHeading, 16);
                 addLessons(schedule.day(target, subgroup));
             }
         } else {
             addLessons(lessons);
         }
-        String source = schedule.source.isBlank() ? "Сохранённое расписание" : schedule.source;
-        if (!store.feed().isEmpty() && System.currentTimeMillis() - store.lastSync() > 48 * 3600_000L) {
-            source += " · давно не обновлялось";
+        if (!schedule.demo && visible.updatedAt() > 0) {
+            String updated = Instant.ofEpochMilli(visible.updatedAt()).atZone(ZoneId.systemDefault()).format(UPDATED);
+            add(page, label("Обновлено · " + updated, 12, palette.muted, false), 15);
         }
-        if (!ZoneId.systemDefault().equals(Schedule.ZONE)) source += " · время Тюмени";
-        add(page, label(source, 12, palette.muted, false), 15);
         updateProgress(now);
     }
 
@@ -342,7 +373,7 @@ public final class MainActivity extends Activity {
         if (viewedSubgroup != null && (viewedSubgroup.isBlank() || schedule.subgroups().contains(viewedSubgroup))) {
             return viewedSubgroup;
         }
-        return store.subgroup();
+        return otherGroup == null ? store.subgroup() : "";
     }
 
     private void addSubgroupFilter(Schedule schedule, String selected) {
@@ -400,7 +431,7 @@ public final class MainActivity extends Activity {
     }
 
     private void updateProgress(Instant now) {
-        Schedule schedule = store.read();
+        Schedule schedule = currentSchedule();
         Schedule.Lesson lesson = schedule.next(now, visibleSubgroup(schedule));
         boolean active = lesson != null && !lesson.starts().isAfter(now);
         int percent = active ? lesson.progress(now) : 0;
@@ -409,7 +440,8 @@ public final class MainActivity extends Activity {
             long minutes = Math.max(1, (lesson.ends().getEpochSecond() - now.getEpochSecond() + 59) / 60);
             featuredStatus.setText(getString(R.string.class_remaining, minutes));
         }
-        glyph.show(foreground && store.glyph() && active && !schedule.demo ? percent : -1);
+        Schedule.Lesson personalLesson = foreground && store.glyph() ? GlyphOptions.activeLesson(store, now) : null;
+        glyph.show(personalLesson != null ? personalLesson.progress(now) : -1, GlyphOptions.load(store.prefs));
     }
 
     private Schedule.Lesson firstUpcomingDay(Schedule schedule, Instant now) {
@@ -424,6 +456,93 @@ public final class MainActivity extends Activity {
         followDay = false;
         date = date.plusDays(week ? 7L * delta : delta);
         render(false);
+    }
+
+    private Schedule currentSchedule() { return otherGroup == null ? store.read() : otherGroup.schedule(); }
+
+    private ScheduleStore.SavedGroup currentGroup() {
+        return otherGroup == null ? new ScheduleStore.SavedGroup(store.feed(), store.read(), store.lastSync()) : otherGroup;
+    }
+
+    private void addFavorites(String currentFeed) {
+        var favorites = store.favorites();
+        if (favorites.isEmpty() && otherGroup == null) return;
+        var viewport = new HorizontalScrollView(this);
+        viewport.setHorizontalScrollBarEnabled(false);
+        var chips = row();
+        if (otherGroup != null && favorites.stream().noneMatch(item -> item.feed().equals(store.feed()))) {
+            addFavoriteChip(chips, "Моя группа", false, () -> viewGroup(null));
+        }
+        for (var favorite : favorites) {
+            boolean active = favorite.feed().equals(currentFeed);
+            addFavoriteChip(chips, favorite.name(), active, () -> {
+                if (!active) openGroup(favorite);
+            });
+        }
+        viewport.addView(chips);
+        add(page, viewport, 7);
+    }
+
+    private void addFavoriteChip(LinearLayout row, String name, boolean selected, Runnable action) {
+        var chip = button(name, selected, action);
+        chip.setSelected(selected);
+        var spacing = new LinearLayout.LayoutParams(-2, -2);
+        spacing.setMarginEnd(dp(7));
+        row.addView(chip, spacing);
+    }
+
+    private void viewGroup(ScheduleStore.SavedGroup group) {
+        otherGroup = group;
+        viewedSubgroup = null;
+        render(false);
+    }
+
+    private void openGroup(ScheduleStore.Favorite group) {
+        if (busy) return;
+        if (group.feed().equals(store.feed())) {
+            viewGroup(null);
+            return;
+        }
+        var cached = store.cachedFavorite(group);
+        if (cached != null) {
+            viewGroup(cached);
+            long now = System.currentTimeMillis();
+            if (now - cached.updatedAt() < 24 * 3600_000L
+                    || now - previewAttempts.getOrDefault(group.feed(), 0L) < 2 * 3600_000L) return;
+            previewAttempts.put(group.feed(), now);
+            executor.execute(() -> {
+                try {
+                    var snapshot = loadGroup(group);
+                    store.cacheFavorite(snapshot);
+                    runOnUiThread(() -> {
+                        if (!isFinishing() && !isDestroyed() && otherGroup == cached) {
+                            otherGroup = snapshot;
+                            render(true);
+                        }
+                    });
+                } catch (Exception unavailable) {
+                    // The saved timetable is available when the network is down.
+                }
+            });
+        } else {
+            work(() -> loadGroup(group), snapshot -> {
+                if (store.read().group.isEmpty() || store.read().demo) useAsPersonal(snapshot);
+                else viewGroup(snapshot);
+            });
+        }
+    }
+
+    private static ScheduleStore.SavedGroup loadGroup(ScheduleStore.Favorite group) throws Exception {
+        Schedule data = Schedule.load(Schedule.https(group.feed()));
+        if (data.demo || !data.group.equals(group.name())) {
+            throw new IllegalArgumentException("Источник вернул другое расписание");
+        }
+        return new ScheduleStore.SavedGroup(group.feed(), data, System.currentTimeMillis());
+    }
+
+    private void useAsPersonal(ScheduleStore.SavedGroup group) {
+        boolean changed = !store.read().group.equals(group.schedule().group);
+        if (save(group) && changed && !group.schedule().subgroups().isEmpty()) subgroup();
     }
 
     private void chooseGroup() {
@@ -483,17 +602,7 @@ public final class MainActivity extends Activity {
             if (filtered.isEmpty()) return;
             Schedule.Group group = filtered.get(position);
             dialog.dismiss();
-            work(() -> {
-                Schedule data = Schedule.load(group.url());
-                if (data.demo || !data.group.equals(group.name())) {
-                    throw new IllegalArgumentException("Источник вернул другое расписание");
-                }
-                return data;
-            }, data -> {
-                boolean changed = !store.read().group.equals(data.group);
-                save(data, group.url().toString());
-                if (changed && !data.subgroups().isEmpty()) subgroup();
-            });
+            openGroup(new ScheduleStore.Favorite(group.name(), group.url().toString()));
         });
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
@@ -537,29 +646,44 @@ public final class MainActivity extends Activity {
     }
 
     private void refresh() {
-        String url = store.feed();
-        if (url.isEmpty()) return;
-        work(() -> Schedule.load(Schedule.https(url)), data -> {
-            try {
-                if (!store.refresh(url, data)) throw new IllegalArgumentException("Источник вернул другое расписание");
-                ScheduleEvents.run(this, false);
+        if (otherGroup != null) {
+            var visible = otherGroup;
+            var group = new ScheduleStore.Favorite(visible.schedule().group, visible.feed());
+            work(() -> loadGroup(group), snapshot -> {
+                store.cacheFavorite(snapshot);
+                if (otherGroup == visible) otherGroup = snapshot;
                 render(true);
                 toast("Расписание обновлено");
-            } catch (Exception failure) { report(failure); }
+            });
+            return;
+        }
+        String url = store.feed();
+        if (url.isEmpty()) return;
+        work(() -> RefreshJob.refresh(this, url, true, () -> !Thread.currentThread().isInterrupted()), updated -> {
+            RefreshJob.configure(this);
+            render(true);
+            if (updated) toast("Расписание обновлено");
         });
     }
 
     private void save(Schedule schedule, String feed) {
+        save(new ScheduleStore.SavedGroup(feed, schedule, System.currentTimeMillis()));
+    }
+
+    private boolean save(ScheduleStore.SavedGroup group) {
         try {
-            store.select(schedule, feed);
-            viewedSubgroup = null;
+            store.select(group);
+            ScheduleEvents.run(this, false);
+            RefreshJob.configure(this);
             date = Schedule.today();
             followDay = true;
             week = false;
-            ScheduleEvents.run(this, false);
-            RefreshJob.configure(this);
-            render(false);
-        } catch (Exception failure) { report(failure); }
+            viewGroup(null);
+            return true;
+        } catch (Exception failure) {
+            report(failure);
+            return false;
+        }
     }
 
     private void settings() {
@@ -643,10 +767,11 @@ public final class MainActivity extends Activity {
             case "data" -> {
                 var controls = settingsCard();
                 if (busy) add(page, label("Обновляю расписание…", 14, palette.muted, false), 10);
-                if (!store.feed().isEmpty()) {
-                    setting(controls, "Обновить расписание", "", this::refresh);
-                    if (store.feed().startsWith(OFFICIAL + "schedule/group/")) {
-                        setting(controls, "Эта группа на сайте ТИУ", schedule.group, () -> openLink(store.feed()));
+                var visible = currentGroup();
+                if (!visible.feed().isEmpty()) {
+                    setting(controls, "Обновить сейчас", visible.schedule().group, this::refresh);
+                    if (visible.feed().startsWith(OFFICIAL + "schedule/group/")) {
+                        setting(controls, "Эта группа на сайте ТИУ", visible.schedule().group, () -> openLink(visible.feed()));
                     }
                 }
                 setting(controls, "Каталог групп", "", this::catalogSettings);
@@ -666,7 +791,7 @@ public final class MainActivity extends Activity {
                     setting(personalize, "Моя подгруппа", subgroup, this::subgroup);
                 }
                 if (GlyphProgress.supported()) {
-                    setting(personalize, "Glyph Interface", store.glyph() ? "Включён" : "Выключен", () -> openSettingsPage("glyph"));
+                    setting(personalize, "Glyph Interface", "Плитка и режимы подсветки", () -> openSettingsPage("glyph"));
                 }
                 var tools = settingsCard();
                 setting(tools, "Уведомления и будильники", "", () -> openSettingsPage("alerts"));
@@ -909,13 +1034,43 @@ public final class MainActivity extends Activity {
 
     private void glyphControls() {
         var controls = settingsCard();
+        var options = GlyphOptions.load(store.prefs);
+        setting(controls, "Добавить плитку Glyph", "Быстрые настройки Android", () -> GlyphProgress.requestTile(this));
+        var effects = GlyphOptions.Effect.values();
+        setting(controls, "Режим подсветки", options.effect().label, () -> glyphChoice(
+                "Режим подсветки", java.util.Arrays.stream(effects).map(effect -> effect.label).toArray(String[]::new),
+                options.effect().ordinal(), index -> store.prefs.edit().putString("glyph.effect", effects[index].name()).apply()));
+        String[] brightness = {"10%", "25%", "50%", "75%", "100%"};
+        int[] levels = {10, 25, 50, 75, 100};
+        setting(controls, "Яркость", options.brightness() + "%", () -> {
+            int selected = java.util.Arrays.binarySearch(levels, options.brightness());
+            glyphChoice("Яркость", brightness, Math.max(-1, selected),
+                    index -> store.prefs.edit().putInt("glyph.brightness", levels[index]).apply());
+        });
+        if (options.effect() != GlyphOptions.Effect.PULSE && options.effect() != GlyphOptions.Effect.STEADY) {
+            setting(controls, "Направление индикатора", options.reverse() ? "Обратное" : "Обычное",
+                    () -> glyphChoice("Направление индикатора", new String[]{"Обычное", "Обратное"},
+                            options.reverse() ? 1 : 0,
+                            index -> store.prefs.edit().putBoolean("glyph.reverse", index == 1).apply()));
+        }
+        var timers = GlyphOptions.Cutoff.values();
+        setting(controls, "Таймер плитки", options.cutoff().label, () -> glyphChoice(
+                "Таймер плитки", java.util.Arrays.stream(timers).map(timer -> timer.label).toArray(String[]::new),
+                options.cutoff().ordinal(), index -> store.prefs.edit().putString("glyph.cutoff", timers[index].name()).apply()));
+        setting(controls, "Не гасить экран в сеансе", options.keepScreenOn() ? "Включено" : "Выключено", () -> {
+            store.prefs.edit().putBoolean("glyph.keepScreen", !options.keepScreenOn()).apply();
+            renderSettings(true);
+        });
+        add(page, label("Плитка включает подсветку текущей пары. Она погаснет, когда закроется окно, "
+                + "истечёт таймер или закончится пара.", 14, palette.muted, false), 12);
+        var extra = settingsCard();
         boolean enabled = store.glyph();
-        setting(controls, "Прогресс пары", enabled ? "Включён" : "Выключен", () -> {
+        setting(extra, "Включать в приложении", enabled ? "Автоматически во время пары" : "Выключено", () -> {
             store.prefs.edit().putBoolean("glyph", !enabled).apply();
             renderSettings(true);
             updateProgress(Instant.now());
         });
-        setting(controls, "Проверить подсветку", glyphTesting ? "Идёт проверка…" : "На три секунды", () -> {
+        setting(extra, "Проверить подсветку", glyphTesting ? "Идёт проверка…" : "На три секунды", () -> {
             if (glyphTesting) return;
             glyphTesting = true;
             glyphStatus = "";
@@ -932,12 +1087,20 @@ public final class MainActivity extends Activity {
                 if (foreground && "glyph".equals(settingsPage)) renderSettings(true);
             });
         });
-        add(page, label("Прогресс виден во время пары, пока приложение открыто.", 14, palette.muted, false), 12);
         if (!glyphStatus.isEmpty()) {
             var status = label(glyphStatus, 14, palette.text, false);
             status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
             add(page, status, 10);
         }
+    }
+
+    private void glyphChoice(String title, String[] labels, int selected, java.util.function.IntConsumer update) {
+        new AlertDialog.Builder(this).setTitle(title).setSingleChoiceItems(labels, selected, (dialog, index) -> {
+            update.accept(index);
+            dialog.dismiss();
+            renderSettings(true);
+            updateProgress(Instant.now());
+        }).setNegativeButton("Закрыть", null).show();
     }
 
     private void importSchedule() {
