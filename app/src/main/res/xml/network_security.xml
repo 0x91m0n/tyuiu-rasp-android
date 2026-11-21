@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <!-- Some Android 13 system images lack the public GlobalSign Root R46 used by TIU. -->
+        <domain includeSubdomains="false">my.tyuiu.ru</domain>
+        <domain includeSubdomains="false">sso.tyuiu.ru</domain>
+        <domain includeSubdomains="false">educon2.tyuiu.ru</domain>
+        <domain includeSubdomains="false">storage.tyuiu.ru</domain>
+        <domain includeSubdomains="false">timetable.tyuiu.ru</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="@raw/globalsign_root_r46" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

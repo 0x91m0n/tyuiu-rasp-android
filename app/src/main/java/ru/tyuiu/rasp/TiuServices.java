@@ -9,8 +9,21 @@ import android.widget.Toast;
 
 final class TiuServices {
     static final String MY_TIU = "https://my.tyuiu.ru/";
-    static final String EDUCON = "https://educon2.tyuiu.ru";
-    static final String EDUCON_GRADES = EDUCON + "/grade/report/overview/index.php";
+    static final String EDUCON = "https://educon2.tyuiu.ru/";
+
+    enum Page {
+        RECORD_BOOK("Электронная зачётка", MY_TIU),
+        ACCOUNT("Мой ТИУ", MY_TIU),
+        COURSES("Эдукон", EDUCON);
+
+        final String title;
+        final String url;
+
+        Page(String title, String url) {
+            this.title = title;
+            this.url = url;
+        }
+    }
 
     private TiuServices() {}
 

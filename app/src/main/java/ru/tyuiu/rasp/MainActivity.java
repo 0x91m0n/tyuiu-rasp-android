@@ -1164,14 +1164,13 @@ public final class MainActivity extends Activity {
         String feed = currentGroup().feed();
         String timetable = feed.startsWith(OFFICIAL + "schedule/group/") ? feed : OFFICIAL;
         var links = settingsCard();
-        setting(links, "Мой ТИУ", "Личный кабинет и электронная зачётная книжка",
-                () -> TiuServices.openTab(this, TiuServices.MY_TIU, palette));
-        setting(links, "Баллы в Эдуконе", "Оценки по курсам",
-                () -> startActivity(CredentialVaultActivity.gradesIntent(this)));
+        setting(links, "Электронная зачётка", "Баллы и оценки в «Мой ТИУ»",
+                () -> startActivity(CredentialVaultActivity.portalIntent(this, TiuServices.Page.RECORD_BOOK)));
+        setting(links, "Мой ТИУ", "Личный кабинет",
+                () -> startActivity(CredentialVaultActivity.portalIntent(this, TiuServices.Page.ACCOUNT)));
         setting(links, "Эдукон", "Учебные материалы и задания",
-                () -> TiuServices.openTab(this, TiuServices.EDUCON + "/", palette));
+                () -> startActivity(CredentialVaultActivity.portalIntent(this, TiuServices.Page.COURSES)));
         setting(links, "Расписание ТИУ", "", () -> openLink(timetable));
-        setting(links, "Электронная библиотека", "", () -> openLink("https://jirbis.tyuiu.ru/"));
     }
 
     private <T> void work(java.util.concurrent.Callable<T> task, java.util.function.Consumer<T> result) {

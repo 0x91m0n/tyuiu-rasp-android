@@ -38,16 +38,12 @@ import android.widget.Toast;
 
 import javax.crypto.Cipher;
 import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.function.Consumer;
 
 public final class CredentialVaultActivity extends Activity {
     private static final int AUTHENTICATORS = BiometricManager.Authenticators.BIOMETRIC_STRONG
             | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
-    private static final String SHOW_GRADES = "ru.tyuiu.rasp.SHOW_GRADES";
+    private static final String PORTAL_PAGE = "tiu_portal_page";
     private CredentialVault vault;
     private ThemePalette palette;
     private EditText login;
@@ -59,14 +55,11 @@ public final class CredentialVaultActivity extends Activity {
     private boolean secureScreen;
     private Runnable whenResumed;
     private long resumeBefore;
-    private boolean gradesMode;
-    private boolean gradesVisible;
-    private ExecutorService worker;
-    private Future<?> gradesRequest;
-    private int requestVersion;
+    private TiuServices.Page portalPage;
+    private TiuPortal portal;
 
-    static Intent gradesIntent(Context context) {
-        return new Intent(context, CredentialVaultActivity.class).setAction(SHOW_GRADES);
+    static Intent portalIntent(Context context, TiuServices.Page page) {
+        return new Intent(context, CredentialVaultActivity.class).putExtra(PORTAL_PAGE, page.name());
     }
 
     @Override protected void onCreate(Bundle state) {
@@ -76,10 +69,12 @@ public final class CredentialVaultActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setDecorFitsSystemWindows(false);
         vault = new CredentialVault(this);
-        gradesMode = SHOW_GRADES.equals(getIntent().getAction());
-        if (gradesMode) worker = Executors.newSingleThreadExecutor();
+        String requestedPage = getIntent().getStringExtra(PORTAL_PAGE);
+        if (requestedPage != null) portalPage = TiuServices.Page.valueOf(requestedPage);
         locked("");
-        if (!gradesMode && state == null && deviceSecure()) getWindow().getDecorView().post(this::unlock);
+        if (state == null && deviceSecure() && (portalPage == null || vault.exists())) {
+            getWindow().getDecorView().post(this::unlock);
+        }
     }
 
     @Override protected void onResume() {
@@ -93,8 +88,8 @@ public final class CredentialVaultActivity extends Activity {
 
     @Override protected void onPause() {
         resumed = false;
-        if (password != null || gradesVisible || gradesRequest != null) {
-            cancelGrades();
+        if (password != null || portal != null) {
+            closePortal();
             locked("");
         }
         super.onPause();
@@ -109,8 +104,7 @@ public final class CredentialVaultActivity extends Activity {
         if (prompt != null) prompt.cancel();
         if (cleanup != null) cleanup.run();
         clearEditor();
-        cancelGrades();
-        if (worker != null) worker.shutdownNow();
+        closePortal();
         super.onDestroy();
     }
 
@@ -122,17 +116,17 @@ public final class CredentialVaultActivity extends Activity {
         try {
             if (vault.exists()) {
                 var request = vault.readRequest();
-                String title = gradesMode ? "Войти в Эдукон" : "Разблокировать хранилище";
+                String title = portalPage == null ? "Разблокировать хранилище" : "Подтвердить вход в ТИУ";
                 authenticate(title, request.cipher(), authorized -> visible(() -> {
                     try {
                         var entry = vault.read(request, authorized);
-                        if (gradesMode) loadGrades(entry);
+                        if (portalPage != null) showPortal(entry);
                         else editor(entry.login(), entry.password(), null);
                     } catch (Exception unavailable) {
                         locked("Не удалось открыть сохранённую запись", true);
                     }
                 }), null);
-            } else if (!gradesMode) {
+            } else if (portalPage == null) {
                 authenticate("Открыть хранилище", vault.writeRequest(),
                         authorized -> visible(() -> editor("", "", authorized)), null);
             } else {
@@ -277,11 +271,10 @@ public final class CredentialVaultActivity extends Activity {
             getSystemService(InputMethodManager.class).hideSoftInputFromWindow(focus.getWindowToken(), 0);
         }
         clearEditor();
-        gradesVisible = false;
         var panel = page();
         secureScreen = deviceSecure();
-        if (gradesMode) {
-            gradeEntry(panel, status);
+        if (portalPage != null) {
+            portalEntry(panel, status);
             return;
         }
         String message = status;
@@ -299,17 +292,17 @@ public final class CredentialVaultActivity extends Activity {
         }
     }
 
-    private void gradeEntry(LinearLayout panel, String status) {
+    private void portalEntry(LinearLayout panel, String status) {
         boolean saved = vault.exists();
-        String message = status.isBlank() ? saved ? "После разблокировки приложение войдёт на educon2.tyuiu.ru с данными из хранилища."
-                : "Чтобы загрузить баллы, сохрани логин и пароль Эдукона." : status;
+        String message = status.isBlank() ? saved ? "После подтверждения данные из хранилища будут переданы на sso.tyuiu.ru."
+                : "Сохрани учётную запись ТИУ для автовхода." : status;
         add(panel, text(message, 15, palette.muted), 0);
         if (saved && secureScreen) {
-            add(panel, action("Разблокировать и загрузить", true, this::unlock), 14);
+            add(panel, action("Войти сохранёнными данными", true, this::unlock), 14);
         } else {
             add(panel, action("Открыть хранилище", true, this::openVault), 14);
         }
-        add(panel, action("Открыть оценки на сайте", false, () -> openEducon(TiuServices.EDUCON_GRADES)), 7);
+        add(panel, action("Открыть страницу ТИУ", false, () -> showPortal(null)), 7);
     }
 
     private void openVault() {
@@ -317,63 +310,54 @@ public final class CredentialVaultActivity extends Activity {
         startActivity(new Intent(this, CredentialVaultActivity.class));
     }
 
-    private void loadGrades(CredentialVault.Entry entry) {
-        var panel = page();
-        add(panel, text("Загружаю баллы из Эдукона…", 15, palette.muted), 0);
-        int version = ++requestVersion;
-        gradesRequest = worker.submit(() -> {
-            try {
-                List<EduconClient.Grade> grades = EduconClient.grades(entry);
-                runOnUiThread(() -> {
-                    if (version != requestVersion || !resumed || isFinishing()) return;
-                    gradesRequest = null;
-                    showGrades(grades);
-                });
-            } catch (Exception failure) {
-                String message = failure instanceof EduconClient.SignInFailed
-                        ? "Эдукон не принял сохранённые данные. Проверь их в хранилище или войди через сайт."
-                        : "Не удалось загрузить баллы. Проверь соединение или открой оценки на сайте.";
-                runOnUiThread(() -> {
-                    if (version != requestVersion || !resumed || isFinishing()) return;
-                    gradesRequest = null;
-                    locked(message);
-                });
-            }
+    private void showPortal(CredentialVault.Entry entry) {
+        var root = column();
+        root.setBackgroundColor(palette.background);
+        fitInsets(root);
+        var header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(8), dp(5), dp(8), 0);
+        var back = action("‹", false, () -> {
+            if (portal != null && portal.canGoBack()) portal.goBack();
+            else finish();
         });
-    }
+        back.setContentDescription("Назад");
+        header.addView(back, new LinearLayout.LayoutParams(dp(48), -2));
+        var title = text(portalPage.title, 18, palette.text);
+        title.setPadding(dp(8), 0, dp(8), 0);
+        title.setAccessibilityHeading(true);
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        var browser = action("↗", false, () -> TiuServices.openTab(this, portalPage.url, palette));
+        browser.setContentDescription("Открыть в браузере");
+        header.addView(browser, new LinearLayout.LayoutParams(dp(48), -2));
+        add(root, header, 0);
 
-    private void cancelGrades() {
-        requestVersion++;
-        if (gradesRequest != null) gradesRequest.cancel(true);
-        gradesRequest = null;
-    }
-
-    private void showGrades(List<EduconClient.Grade> grades) {
-        gradesVisible = true;
-        var panel = page();
-        if (grades.isEmpty()) add(panel, text("Эдукон пока не вернул баллы по курсам.", 15, palette.muted), 4);
-        for (EduconClient.Grade grade : grades) {
-            var row = new LinearLayout(this);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setMinimumHeight(dp(52));
-            row.setPadding(dp(8), dp(8), dp(8), dp(8));
-            row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x307f7f7f),
-                    shape(palette.control, 12), null));
-            var course = text(grade.course(), 15, palette.text);
-            row.addView(course, new LinearLayout.LayoutParams(0, -2, 1));
-            var mark = text(grade.score(), 16, palette.accent);
-            var markSpace = new LinearLayout.LayoutParams(-2, -2);
-            markSpace.setMarginStart(dp(10));
-            row.addView(mark, markSpace);
-            row.setFocusable(true);
-            row.setOnClickListener(view -> openEducon(TiuServices.EDUCON + "/grade/report/user/index.php?id=" + grade.courseId()));
-            add(panel, row, 6);
+        var status = text("Открываю страницу ТИУ…", 13, palette.muted);
+        status.setPadding(dp(12), dp(5), dp(12), dp(5));
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        add(root, status, 1);
+        if (portalPage == TiuServices.Page.RECORD_BOOK) {
+            add(root, action("Найти зачётку", false, () -> {
+                if (portal != null) portal.findRecordBook(true);
+            }), 2);
         }
-        add(panel, action("Открыть оценки на сайте", false, () -> openEducon(TiuServices.EDUCON_GRADES)), 12);
+        try {
+            portal = new TiuPortal(this, portalPage, status::setText);
+            root.addView(portal, new LinearLayout.LayoutParams(-1, 0, 1));
+            setContentView(root);
+            portal.open(entry);
+        } catch (RuntimeException unavailable) {
+            closePortal();
+            var fallback = page();
+            add(fallback, text("Встроенный просмотр недоступен.", 15, palette.muted), 0);
+            add(fallback, action("Открыть в браузере", true, () -> TiuServices.openTab(this, portalPage.url, palette)), 12);
+        }
     }
 
-    private void openEducon(String url) {
-        TiuServices.openTab(this, url, palette);
+    private void closePortal() {
+        TiuPortal current = portal;
+        portal = null;
+        if (current != null) current.close();
     }
 
     private void editor(String user, String secret, Cipher authorized) {
@@ -440,12 +424,7 @@ public final class CredentialVaultActivity extends Activity {
         shell.setBackgroundColor(palette.background);
         shell.setFillViewport(true);
         shell.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
-        shell.setOnApplyWindowInsetsListener((view, insets) -> {
-            var edges = insets.getInsets(WindowInsets.Type.systemBars()
-                    | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
-            view.setPadding(edges.left, edges.top, edges.right, edges.bottom);
-            return insets;
-        });
+        fitInsets(shell);
         var content = column();
         content.setFocusableInTouchMode(true);
         content.setPadding(dp(20), dp(20), dp(20), dp(24));
@@ -455,7 +434,7 @@ public final class CredentialVaultActivity extends Activity {
         var back = action("‹", false, this::finish);
         back.setContentDescription("Назад");
         header.addView(back, new LinearLayout.LayoutParams(dp(48), -2));
-        var title = text(gradesMode ? "Баллы в Эдуконе" : "Логин и пароль", 26, palette.text);
+        var title = text(portalPage == null ? "Логин и пароль" : portalPage.title, 26, palette.text);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setAccessibilityHeading(true);
         DisplayFonts.heading(title, palette);
@@ -474,6 +453,15 @@ public final class CredentialVaultActivity extends Activity {
                 | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
         if (bars != null) bars.setSystemBarsAppearance(palette.light() ? mask : 0, mask);
         return panel;
+    }
+
+    private void fitInsets(View root) {
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            var edges = insets.getInsets(WindowInsets.Type.systemBars()
+                    | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+            view.setPadding(edges.left, edges.top, edges.right, edges.bottom);
+            return insets;
+        });
     }
 
     private TextView action(String label, boolean primary, Runnable run) {

@@ -97,8 +97,10 @@ public final class ScheduleSmoke extends Instrumentation {
                 require(live.group.equals(group.name()) && !live.lessons.isEmpty(), "Official timetable on Android");
             }
             var other = new Schedule.Lesson(start, start.plusMinutes(95), "Пара другой подгруппы", "", "Ауд. 215", "", "2");
+            var adjacentStart = lesson.end().plusMinutes(40);
+            if (!adjacentStart.toLocalDate().equals(start.toLocalDate())) adjacentStart = start.minusMinutes(135);
             var withGap = new Schedule(schedule.group, schedule.source, List.of(lesson, other,
-                    new Schedule.Lesson(lesson.end().plusMinutes(40), lesson.end().plusMinutes(135),
+                    new Schedule.Lesson(adjacentStart, adjacentStart.plusMinutes(95),
                             "Вторая пара", "", "", "", "")), false);
             store.select(withGap, "");
             store.prefs.edit().putBoolean("notifications", true).putInt("lead", 20).putString("theme", "indigo").apply();
@@ -139,7 +141,7 @@ public final class ScheduleSmoke extends Instrumentation {
                     "Reminder delivery and deduplication");
             notifications.cancel(lesson.key(), 1);
             checkFavorites(screen, store, withGap, lesson, other);
-            checkEduconGrades();
+            checkPortalLogin(context);
             runOnMainSync(() -> checkDottedHeading(context));
 
             AppWidgetManager widgets = context.getSystemService(AppWidgetManager.class);
@@ -232,13 +234,68 @@ public final class ScheduleSmoke extends Instrumentation {
         finish(status, result);
     }
 
-    private static void checkEduconGrades() throws org.json.JSONException {
-        var courses = new org.json.JSONArray("[{\"id\":12,\"fullname\":\"Математика &amp; логика\"}]");
-        var grades = new org.json.JSONArray("[{\"courseid\":12,\"grade\":\"<strong>87,50</strong>\"},"
-                + "{\"courseid\":14,\"grade\":\"-\"}]");
-        var decoded = EduconClient.decode(grades, courses);
-        require(decoded.equals(List.of(new EduconClient.Grade(12, "Математика & логика", "87,50"),
-                new EduconClient.Grade(14, "Курс № 14", "—"))), "Educon grades are matched and rendered as plain text");
+    private void checkPortalLogin(Context context) throws Exception {
+        String form = "https://sso.tyuiu.ru/realms/master/protocol/openid-connect/auth";
+        String action = "https://sso.tyuiu.ru/realms/master/login-actions/authenticate";
+        String lookalike = form.replace("sso.tyuiu.ru", "sso.tyuiu.ru.example.test");
+        require(TiuPortal.loginForm(android.net.Uri.parse(form)) && !TiuPortal.loginForm(android.net.Uri.parse(lookalike)),
+                "Vault credentials are restricted to the public TIU sign-in form");
+        require(!TiuPortal.portalOrigin(android.net.Uri.parse("https://evil.test@sso.tyuiu.ru/"))
+                && !TiuPortal.portalOrigin(android.net.Uri.parse("https://sso.tyuiu.ru:8443/"))
+                && !TiuPortal.portalOrigin(android.net.Uri.parse("http://sso.tyuiu.ru/")),
+                "Portal refuses user info, insecure transport and unexpected ports");
+
+        var credential = new CredentialVault.Entry("test@example.test", "Один-\"-\\-два");
+        var expected = new org.json.JSONArray()
+                .put(true).put(credential.login()).put(credential.password()).toString();
+        require(expected.equals(runPortalFixture(context, form, action, credential)),
+                "Official login dispatches input and submits the exact credentials once");
+        var blocked = new org.json.JSONArray().put(false).put("").put("").toString();
+        require(blocked.equals(runPortalFixture(context, lookalike, action, credential)),
+                "Credential script also enforces the origin at execution time");
+        require(blocked.equals(runPortalFixture(context, form, "https://sso.tyuiu.ru.example.test/auth", credential)),
+                "Tampered form action leaves both fields empty");
+    }
+
+    @android.annotation.SuppressLint("SetJavaScriptEnabled")
+    private String runPortalFixture(Context context, String address, String action, CredentialVault.Entry credential)
+            throws InterruptedException {
+        var web = new java.util.concurrent.atomic.AtomicReference<android.webkit.WebView>();
+        var result = new java.util.concurrent.atomic.AtomicReference<String>();
+        var ready = new java.util.concurrent.CountDownLatch(1);
+        try {
+            runOnMainSync(() -> {
+                var view = new android.webkit.WebView(context);
+                web.set(view);
+                view.getSettings().setJavaScriptEnabled(true);
+                view.getSettings().setBlockNetworkLoads(true);
+                view.setWebViewClient(new android.webkit.WebViewClient() {
+                    @Override public void onPageFinished(android.webkit.WebView loaded, String url) {
+                        String script = "(() => { const sent = " + TiuPortal.credentialScript(credential)
+                                + "; return [sent && window.submitted, username.value, password.value]; })()";
+                        loaded.evaluateJavascript(script, value -> {
+                            result.set(value);
+                            ready.countDown();
+                        });
+                    }
+                });
+                String html = String.format(java.util.Locale.ROOT, """
+                        <form method="post" action="%s" onsubmit="window.submitted = true; return false;">
+                          <input id="username" name="username" type="hidden">
+                          <input id="email" name="email" oninput="username.value = this.value">
+                          <input id="password" name="password" type="password" required>
+                          <button name="login" type="submit">Войти</button>
+                        </form>
+                        """, action);
+                view.loadDataWithBaseURL(address, html, "text/html", "UTF-8", null);
+            });
+            require(ready.await(10, java.util.concurrent.TimeUnit.SECONDS), "Local portal fixture finished");
+            return result.get();
+        } finally {
+            runOnMainSync(() -> {
+                if (web.get() != null) web.get().destroy();
+            });
+        }
     }
 
     private static void checkRefreshPlan() {
