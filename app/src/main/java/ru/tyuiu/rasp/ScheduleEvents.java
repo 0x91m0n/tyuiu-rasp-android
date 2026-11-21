@@ -5,6 +5,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.appwidget.AppWidgetManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -16,6 +17,9 @@ import java.util.HashSet;
 
 public final class ScheduleEvents extends BroadcastReceiver {
     private static final String TICK = "ru.tyuiu.rasp.TICK";
+    private static final String WIDGET_PREVIOUS = "ru.tyuiu.rasp.WIDGET_PREVIOUS";
+    private static final String WIDGET_NEXT = "ru.tyuiu.rasp.WIDGET_NEXT";
+    private static final String WIDGET_RESET = "ru.tyuiu.rasp.WIDGET_RESET";
     private static final String CHANNEL = "classes";
     static final String OPEN_VIEW = "view";
     static final String OPEN_DATE = "widget_date";
@@ -23,8 +27,17 @@ public final class ScheduleEvents extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
+        String action = intent.getAction();
+        if (WIDGET_PREVIOUS.equals(action) || WIDGET_NEXT.equals(action) || WIDGET_RESET.equals(action)) {
+            int id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID);
+            int days = WIDGET_PREVIOUS.equals(action) ? -1 : WIDGET_NEXT.equals(action) ? 1 : 0;
+            synchronized (ScheduleEvents.class) {
+                Widgets.moveDay(context, id, Instant.now(), days);
+            }
+            return;
+        }
         run(context, true);
-        if (!TICK.equals(intent.getAction())) RefreshJob.configure(context);
+        if (!TICK.equals(action)) RefreshJob.configure(context);
     }
 
     static PendingIntent open(Context context) {
@@ -56,6 +69,13 @@ public final class ScheduleEvents extends BroadcastReceiver {
                 .putExtra(OPEN_SUBGROUP, subgroup)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         return PendingIntent.getActivity(context, widget, intent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
+    static PendingIntent moveWidgetDay(Context context, int widget, int delta) {
+        String action = delta < 0 ? WIDGET_PREVIOUS : delta > 0 ? WIDGET_NEXT : WIDGET_RESET;
+        var intent = new Intent(context, ScheduleEvents.class).setAction(action)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widget);
+        return PendingIntent.getBroadcast(context, widget, intent, PendingIntent.FLAG_IMMUTABLE);
     }
 
     static boolean exact(Context context) {

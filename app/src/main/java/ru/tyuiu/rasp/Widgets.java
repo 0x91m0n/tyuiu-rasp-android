@@ -84,14 +84,44 @@ final class Widgets {
         var progress = new HashSet<String>();
         for (Instance item : installed(context)) {
             var options = WidgetOptions.load(context, item.id(), item.kind());
-            List<SizeF> sizes = sizes(manager.getAppWidgetOptions(item.id()), item.kind());
-            manager.updateAppWidget(item.id(), renderSizes(context, store, schedule, now, item.id(), options, sizes));
+            updateWidget(context, manager, store, schedule, now, item, options);
             String subgroup = options.subgroup(schedule, store);
             groups.add(subgroup);
             if (options.kind() == Kind.DAY || options.kind() == Kind.WEEK) rolling.add(subgroup);
             if (options.kind() == Kind.PROGRESS) progress.add(subgroup);
         }
         return new Active(groups, rolling, progress);
+    }
+
+    static void moveDay(Context context, int id, Instant now, int delta) {
+        Kind provider = providerFor(context, id);
+        if (provider == null) return;
+        var options = WidgetOptions.load(context, id, provider);
+        if (!options.kind().agenda()) return;
+        var store = new ScheduleStore(context);
+        var schedule = store.read();
+        if (schedule.group.isEmpty()) return;
+        LocalDate today = now.atZone(Schedule.ZONE).toLocalDate();
+        LocalDate automatic = defaultDay(options.kind(), schedule, now, today, options.subgroup(schedule, store));
+        LocalDate selected = WidgetOptions.dateOverride(context, id, options.kind(), today);
+        LocalDate target = delta == 0 ? automatic : (selected == null ? automatic : selected).plusDays(delta);
+        if (target.isBefore(today.minusDays(360)) || target.isAfter(today.plusDays(360))) return;
+        WidgetOptions.setDateOverride(context, id, options.kind(), today, target.equals(automatic) ? null : target);
+        updateWidget(context, AppWidgetManager.getInstance(context), store, schedule, now, new Instance(id, provider), options);
+    }
+
+    private static void updateWidget(Context context, AppWidgetManager manager, ScheduleStore store, Schedule schedule,
+                                     Instant now, Instance widget, WidgetOptions options) {
+        List<SizeF> sizes = sizes(manager.getAppWidgetOptions(widget.id()), widget.kind());
+        manager.updateAppWidget(widget.id(), renderSizes(context, store, schedule, now, widget.id(), options, sizes));
+    }
+
+    private static LocalDate defaultDay(Kind kind, Schedule schedule, Instant now, LocalDate today, String subgroup) {
+        return switch (kind) {
+            case TODAY -> today;
+            case TOMORROW -> today.plusDays(1);
+            default -> schedule.defaultDay(now, subgroup);
+        };
     }
 
     static List<SizeF> sizes(Bundle information, Kind fallback) {
@@ -144,21 +174,25 @@ final class Widgets {
         LocalDate today = now.atZone(Schedule.ZONE).toLocalDate();
         String subgroup = options.subgroup(schedule, store);
         Kind kind = options.kind();
-        LocalDate target = switch (kind) {
-            case TODAY -> today;
-            case TOMORROW -> today.plusDays(1);
-            default -> schedule.defaultDay(now, subgroup);
-        };
+        boolean agenda = kind.agenda();
+        boolean navigation = agenda && !schedule.group.isEmpty();
+        LocalDate selected = navigation && id != AppWidgetManager.INVALID_APPWIDGET_ID
+                ? WidgetOptions.dateOverride(context, id, kind, today) : null;
+        LocalDate target = selected == null ? defaultDay(kind, schedule, now, today, subgroup) : selected;
         String label = switch (kind) {
             case NEXT -> "БЛИЖАЙШАЯ ПАРА";
-            case DAY -> target.equals(today) ? "ПАРЫ НА СЕГОДНЯ" : "ПАРЫ НА ЗАВТРА";
-            case TODAY -> "ПАРЫ НА СЕГОДНЯ";
-            case TOMORROW -> "ПАРЫ НА ЗАВТРА";
-            case WEEK -> "БЛИЖАЙШИЕ 7 ДНЕЙ";
+            case DAY, TODAY, TOMORROW -> target.equals(today) ? "ПАРЫ НА СЕГОДНЯ"
+                    : target.equals(today.plusDays(1)) ? "ПАРЫ НА ЗАВТРА" : "РАСПИСАНИЕ ПАР";
+            case WEEK -> "ПАРЫ НА 7 ДНЕЙ";
             case PROGRESS -> "ПРОГРЕСС ПАРЫ";
         };
-        boolean agenda = kind.agenda();
-        view.setViewVisibility(R.id.widget_schedule_rows, agenda && !schedule.group.isEmpty() ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.widget_schedule_rows, navigation ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.widget_day_previous, navigation ? View.VISIBLE : View.GONE);
+        view.setViewVisibility(R.id.widget_day_next, navigation ? View.VISIBLE : View.GONE);
+        view.setTextColor(R.id.widget_day_previous, palette.accent);
+        view.setTextColor(R.id.widget_day_next, palette.accent);
+        if (selected != null) view.setTextColor(R.id.widget_title, palette.accent);
+        if (navigation) view.setTextViewTextSize(R.id.widget_title, TypedValue.COMPLEX_UNIT_SP, 14 + font * 2);
         view.setInt(R.id.widget_title, "setMaxLines", agenda || small ? 1 : 2);
         String title = "Выберите группу";
         String timing = "";
@@ -167,7 +201,8 @@ final class Widgets {
         if (!schedule.group.isEmpty()) {
             String group = options.has(WidgetOptions.GROUP) ? schedule.group : "";
             if (kind == Kind.WEEK) {
-                title = group.isEmpty() ? target.format(Schedule.DATE) + " — " + target.plusDays(6).format(Schedule.DATE) : group;
+                title = group.isEmpty() ? target.format(Schedule.DATE) + " — " + target.plusDays(6).format(Schedule.DATE)
+                        : join(" · ", target.format(Schedule.DATE), group);
                 info = "";
             } else if (kind == Kind.DAY || kind == Kind.TODAY || kind == Kind.TOMORROW) {
                 title = join(" · ", target.format(Schedule.DATE), group);
@@ -207,9 +242,15 @@ final class Widgets {
             else if (!store.feed().isEmpty() && now.toEpochMilli() - store.lastSync() > 48 * 3600_000L) label = "СОХРАНЁННАЯ КОПИЯ";
         }
         if (id != AppWidgetManager.INVALID_APPWIDGET_ID) {
-            view.setOnClickPendingIntent(R.id.widget_root, ScheduleEvents.openWidget(context, id,
-                    kind == Kind.WEEK ? "week" : "", target, subgroup));
+            var open = ScheduleEvents.openWidget(context, id, kind == Kind.WEEK ? "week" : "", target, subgroup);
+            view.setOnClickPendingIntent(R.id.widget_root, open);
+            view.setOnClickPendingIntent(R.id.widget_title, selected == null ? open : ScheduleEvents.moveWidgetDay(context, id, 0));
+            if (navigation) {
+                view.setOnClickPendingIntent(R.id.widget_day_previous, ScheduleEvents.moveWidgetDay(context, id, -1));
+                view.setOnClickPendingIntent(R.id.widget_day_next, ScheduleEvents.moveWidgetDay(context, id, 1));
+            }
         }
+        view.setContentDescription(R.id.widget_title, selected == null ? null : context.getString(R.string.widget_reset_day, title));
         view.setTextViewText(R.id.widget_label, options.title().isBlank() ? label : options.title());
         view.setTextViewText(R.id.widget_title, title);
         optionalText(view, R.id.widget_time, timing, 12 + font, palette.accent);

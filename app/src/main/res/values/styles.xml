@@ -8,6 +8,11 @@
     <string name="widget_week">Расписание на 7 дней · ТИУ</string>
     <string name="widget_progress">Прогресс пары · ТИУ</string>
     <string name="widget_scrollable_schedule">Расписание пар</string>
+    <string name="widget_previous_day">Предыдущий день</string>
+    <string name="widget_next_day">Следующий день</string>
+    <string name="widget_reset_day">%1$s. Вернуться к автоматической дате</string>
+    <string name="widget_previous_arrow">‹</string>
+    <string name="widget_next_arrow">›</string>
     <string name="class_remaining">СЕЙЧАС ИДЁТ  ·  %1$d мин до конца</string>
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>

@@ -1164,8 +1164,12 @@ public final class MainActivity extends Activity {
         String feed = currentGroup().feed();
         String timetable = feed.startsWith(OFFICIAL + "schedule/group/") ? feed : OFFICIAL;
         var links = settingsCard();
-        setting(links, "Эдукон", "Учебные материалы и задания", () -> openLink("https://educon2.tyuiu.ru/"));
-        setting(links, "Мой ТИУ", "Личный кабинет", () -> openLink("https://my.tyuiu.ru/"));
+        setting(links, "Мой ТИУ", "Личный кабинет и электронная зачётная книжка",
+                () -> TiuServices.openTab(this, TiuServices.MY_TIU, palette));
+        setting(links, "Баллы в Эдуконе", "Оценки по курсам",
+                () -> startActivity(CredentialVaultActivity.gradesIntent(this)));
+        setting(links, "Эдукон", "Учебные материалы и задания",
+                () -> TiuServices.openTab(this, TiuServices.EDUCON + "/", palette));
         setting(links, "Расписание ТИУ", "", () -> openLink(timetable));
         setting(links, "Электронная библиотека", "", () -> openLink("https://jirbis.tyuiu.ru/"));
     }

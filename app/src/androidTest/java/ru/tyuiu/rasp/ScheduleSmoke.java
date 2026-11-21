@@ -139,6 +139,7 @@ public final class ScheduleSmoke extends Instrumentation {
                     "Reminder delivery and deduplication");
             notifications.cancel(lesson.key(), 1);
             checkFavorites(screen, store, withGap, lesson, other);
+            checkEduconGrades();
             runOnMainSync(() -> checkDottedHeading(context));
 
             AppWidgetManager widgets = context.getSystemService(AppWidgetManager.class);
@@ -166,15 +167,18 @@ public final class ScheduleSmoke extends Instrumentation {
                     String expected = switch (kind) {
                         case NEXT -> lesson.title();
                         case PROGRESS -> activeLesson.title();
-                        case WEEK -> schedule.group;
-                        case DAY, TODAY, TOMORROW -> {
-                            var date = kind == Widgets.Kind.DAY ? Schedule.today() : Schedule.today().plusDays(1);
+                        case WEEK, DAY, TODAY, TOMORROW -> {
+                            var date = kind == Widgets.Kind.TOMORROW ? Schedule.today().plusDays(1)
+                                    : schedule.defaultDay(renderedAt, store.subgroup());
                             yield date.format(Schedule.DATE) + " · " + schedule.group;
                         }
                     };
                     Schedule renderedSchedule = widgetSchedule;
                     runOnMainSync(() -> {
                         require(hasText(mounted.get(), expected), "Rendered widget " + type.getSimpleName());
+                        int expectedNavigation = kind.agenda() ? View.VISIBLE : View.GONE;
+                        require(mounted.get().findViewById(R.id.widget_day_next).getVisibility() == expectedNavigation,
+                                "Day arrows are available on calendar widgets");
                         if (kind == Widgets.Kind.PROGRESS) {
                             WidgetOptions options = WidgetOptions.decode("{}", kind);
                             var view = Widgets.make(context, store, renderedSchedule, renderedAt, id, options, kind.size)
@@ -187,6 +191,19 @@ public final class ScheduleSmoke extends Instrumentation {
                                             + ", start=" + activeLesson.starts() + ", now=" + renderedAt + ")");
                         }
                     });
+                    if (kind == Widgets.Kind.DAY) {
+                        var today = renderedAt.atZone(Schedule.ZONE).toLocalDate();
+                        var automatic = renderedSchedule.defaultDay(renderedAt, store.subgroup());
+                        Widgets.moveDay(context, id, renderedAt, 1);
+                        Widgets.moveDay(context, id, renderedAt, 1);
+                        require(automatic.plusDays(2).equals(WidgetOptions.dateOverride(context, id, kind, today)),
+                                "Repeated taps advance from the current date");
+                        require(WidgetOptions.dateOverride(context, id, kind, today.plusDays(1)) == null,
+                                "Day navigation expires at Tyumen midnight");
+                        Widgets.moveDay(context, id, renderedAt, 0);
+                        require(WidgetOptions.dateOverride(context, id, kind, today) == null,
+                                "Date tap returns the widget to automatic mode");
+                    }
                 } finally {
                     host.deleteAppWidgetId(id);
                 }
@@ -213,6 +230,15 @@ public final class ScheduleSmoke extends Instrumentation {
             RefreshJob.configure(context);
         }
         finish(status, result);
+    }
+
+    private static void checkEduconGrades() throws org.json.JSONException {
+        var courses = new org.json.JSONArray("[{\"id\":12,\"fullname\":\"Математика &amp; логика\"}]");
+        var grades = new org.json.JSONArray("[{\"courseid\":12,\"grade\":\"<strong>87,50</strong>\"},"
+                + "{\"courseid\":14,\"grade\":\"-\"}]");
+        var decoded = EduconClient.decode(grades, courses);
+        require(decoded.equals(List.of(new EduconClient.Grade(12, "Математика & логика", "87,50"),
+                new EduconClient.Grade(14, "Курс № 14", "—"))), "Educon grades are matched and rendered as plain text");
     }
 
     private static void checkRefreshPlan() {

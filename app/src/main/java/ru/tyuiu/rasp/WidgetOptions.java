@@ -4,6 +4,9 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import org.json.JSONObject;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+
 record WidgetOptions(Widgets.Kind kind, String subgroup, String theme, int opacity, int textSize,
                      boolean compact, int fields, String title) {
     static final String FOLLOW_GROUP = "@app";
@@ -64,9 +67,30 @@ record WidgetOptions(Widgets.Kind kind, String subgroup, String theme, int opaci
         prefs(context).edit().putString(String.valueOf(id), options.encode()).apply();
     }
 
+    static LocalDate dateOverride(Context context, int id, Widgets.Kind kind, LocalDate today) {
+        String stored = prefs(context).getString("date:" + id, "");
+        String prefix = datePrefix(kind, today);
+        if (!stored.startsWith(prefix)) return null;
+        try {
+            return LocalDate.parse(stored.substring(prefix.length()));
+        } catch (DateTimeParseException invalid) {
+            return null;
+        }
+    }
+
+    static void setDateOverride(Context context, int id, Widgets.Kind kind, LocalDate today, LocalDate target) {
+        var editor = prefs(context).edit();
+        String key = "date:" + id;
+        if (target == null) editor.remove(key);
+        else editor.putString(key, datePrefix(kind, today) + target);
+        editor.apply();
+    }
+
+    private static String datePrefix(Widgets.Kind kind, LocalDate today) { return kind.name() + ":" + today + ":"; }
+
     static void deleted(Context context, int[] ids) {
         var editor = prefs(context).edit();
-        for (int id : ids) editor.remove(String.valueOf(id));
+        for (int id : ids) editor.remove(String.valueOf(id)).remove("date:" + id);
         editor.apply();
     }
 
