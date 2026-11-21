@@ -244,6 +244,9 @@ public final class MainActivity extends Activity {
         }
         add(page, groupRow, 12);
         addFavorites(visible.feed());
+        var links = row();
+        links.addView(button("Важные ссылки", false, this::importantLinks));
+        add(page, links, 8);
         if (otherGroup != null) {
             var useGroup = button("Сделать моей группой", false, () -> useAsPersonal(visible));
             add(page, useGroup, 8);
@@ -440,7 +443,8 @@ public final class MainActivity extends Activity {
             long minutes = Math.max(1, (lesson.ends().getEpochSecond() - now.getEpochSecond() + 59) / 60);
             featuredStatus.setText(getString(R.string.class_remaining, minutes));
         }
-        Schedule.Lesson personalLesson = foreground && store.glyph() ? GlyphOptions.activeLesson(store, now) : null;
+        Schedule.Lesson personalLesson = foreground && store.glyph() && !GlyphProgress.tileRunning()
+                ? GlyphOptions.activeLesson(store, now) : null;
         glyph.show(personalLesson != null ? personalLesson.progress(now) : -1, GlyphOptions.load(store.prefs));
     }
 
@@ -1057,12 +1061,8 @@ public final class MainActivity extends Activity {
         setting(controls, "Таймер плитки", options.cutoff().label, () -> glyphChoice(
                 "Таймер плитки", java.util.Arrays.stream(timers).map(timer -> timer.label).toArray(String[]::new),
                 options.cutoff().ordinal(), index -> store.prefs.edit().putString("glyph.cutoff", timers[index].name()).apply()));
-        setting(controls, "Не гасить экран в сеансе", options.keepScreenOn() ? "Включено" : "Выключено", () -> {
-            store.prefs.edit().putBoolean("glyph.keepScreen", !options.keepScreenOn()).apply();
-            renderSettings(true);
-        });
-        add(page, label("Плитка включает подсветку текущей пары. Она погаснет, когда закроется окно, "
-                + "истечёт таймер или закончится пара.", 14, palette.muted, false), 12);
+        add(page, label("Плитка запускает подсветку текущей пары и показывает кнопку остановки в уведомлении. "
+                + "Подсветка выключается по таймеру или после пары.", 14, palette.muted, false), 12);
         var extra = settingsCard();
         boolean enabled = store.glyph();
         setting(extra, "Включать в приложении", enabled ? "Автоматически во время пары" : "Выключено", () -> {
@@ -1071,7 +1071,10 @@ public final class MainActivity extends Activity {
             updateProgress(Instant.now());
         });
         setting(extra, "Проверить подсветку", glyphTesting ? "Идёт проверка…" : "На три секунды", () -> {
-            if (glyphTesting) return;
+            if (glyphTesting || GlyphProgress.tileRunning()) {
+                if (GlyphProgress.tileRunning()) toast("Сначала останови Glyph в шторке");
+                return;
+            }
             glyphTesting = true;
             glyphStatus = "";
             renderSettings(true);
@@ -1086,6 +1089,11 @@ public final class MainActivity extends Activity {
                 };
                 if (foreground && "glyph".equals(settingsPage)) renderSettings(true);
             });
+        });
+        setting(extra, "Запустить в окне", "Если Nothing OS отклоняет фоновый сеанс", () -> GlyphProgress.openWindow(this));
+        setting(extra, "Экран при запуске в окне", options.keepScreenOn() ? "Не гасить" : "По настройке Android", () -> {
+            store.prefs.edit().putBoolean("glyph.keepScreen", !options.keepScreenOn()).apply();
+            renderSettings(true);
         });
         if (!glyphStatus.isEmpty()) {
             var status = label(glyphStatus, 14, palette.text, false);
@@ -1138,6 +1146,16 @@ public final class MainActivity extends Activity {
     private void openLink(String url) {
         try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
         catch (ActivityNotFoundException unavailable) { toast("Браузер не найден"); }
+    }
+
+    private void importantLinks() {
+        String feed = currentGroup().feed();
+        String timetable = feed.startsWith(OFFICIAL + "schedule/group/") ? feed : OFFICIAL;
+        String[] names = {"Эдукон", "Мой ТИУ", "Расписание ТИУ", "Электронная библиотека"};
+        String[] urls = {"https://educon2.tyuiu.ru/", "https://my.tyuiu.ru/", timetable, "https://jirbis.tyuiu.ru/"};
+        new AlertDialog.Builder(this).setTitle("Важные ссылки")
+                .setItems(names, (dialog, which) -> openLink(urls[which]))
+                .setNegativeButton("Закрыть", null).show();
     }
 
     private <T> void work(java.util.concurrent.Callable<T> task, java.util.function.Consumer<T> result) {
@@ -1225,9 +1243,7 @@ public final class MainActivity extends Activity {
         label.setText(value);
         label.setTextSize(size);
         label.setTextColor(color);
-        if (palette == ThemePalette.MONO && size <= 14) {
-            label.setTypeface(Typeface.MONOSPACE, bold ? Typeface.BOLD : Typeface.NORMAL);
-        } else if (bold) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        if (bold) label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         if (size >= 26) DisplayFonts.heading(label, palette);
         if (palette == ThemePalette.MONO && value.matches("[0-9]{2}:[0-9]{2}(–[0-9]{2}:[0-9]{2})?")) {
             DisplayFonts.time(label, palette);

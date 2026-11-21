@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 import org.json.JSONObject;
 
 record WidgetOptions(Widgets.Kind kind, String subgroup, String theme, int opacity, int textSize,
-                     int lines, boolean compact, int fields, String title) {
+                     boolean compact, int fields, String title) {
     static final String FOLLOW_GROUP = "@app";
     static final String FOLLOW_THEME = "app";
     static final int TIME = 1;
@@ -33,18 +33,21 @@ record WidgetOptions(Widgets.Kind kind, String subgroup, String theme, int opaci
         Widgets.Kind kind;
         try { kind = Widgets.Kind.valueOf(object.optString("kind")); }
         catch (IllegalArgumentException missing) { kind = fallback; }
-        int defaultFields = kind == Widgets.Kind.NEXT || kind == Widgets.Kind.PROGRESS
-                ? DEFAULT_FIELDS | ROOM : DEFAULT_FIELDS;
+        int defaultFields = switch (kind) {
+            case NEXT, PROGRESS -> DEFAULT_FIELDS | ROOM;
+            case WEEK -> DEFAULT_FIELDS | WEEK_CLASSES;
+            default -> DEFAULT_FIELDS;
+        };
         return new WidgetOptions(kind, object.optString("subgroup", FOLLOW_GROUP),
                 object.optString("theme", FOLLOW_THEME), clamp(object.optInt("opacity", 100), 0, 100),
-                clamp(object.optInt("size", 0), -1, 1), clamp(object.optInt("lines", 0), 0, 8),
+                clamp(object.optInt("size", 0), -1, 1),
                 object.optBoolean("compact"), object.optInt("fields", defaultFields), object.optString("title"));
     }
 
     String encode() {
         try {
             return new JSONObject().put("kind", kind.name()).put("subgroup", subgroup).put("theme", theme)
-                    .put("opacity", opacity).put("size", textSize).put("lines", lines)
+                    .put("opacity", opacity).put("size", textSize)
                     .put("compact", compact).put("fields", fields).put("title", title).toString();
         } catch (org.json.JSONException impossible) {
             throw new IllegalStateException(impossible);

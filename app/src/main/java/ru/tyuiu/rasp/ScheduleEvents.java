@@ -51,6 +51,13 @@ public final class ScheduleEvents extends BroadcastReceiver {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     }
 
+    static PendingIntent openWidgetDay(Context context, int widget, String subgroup) {
+        var intent = new Intent(context, MainActivity.class).setAction("ru.tyuiu.rasp.OPEN_WIDGET_DAY")
+                .putExtra(OPEN_SUBGROUP, subgroup)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        return PendingIntent.getActivity(context, widget, intent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
     static boolean exact(Context context) {
         return context.getSystemService(AlarmManager.class).canScheduleExactAlarms();
     }

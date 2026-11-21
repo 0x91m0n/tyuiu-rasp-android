@@ -1,6 +1,7 @@
 <resources>
     <string name="glyph_tile">Glyph пары</string>
     <string name="glyph_session_until">%1$s · до %2$s</string>
+    <string name="glyph_class_until">Подсветка до %1$s</string>
     <style name="GlyphSessionTheme" parent="android:style/Theme.Material.Dialog.NoActionBar">
         <item name="android:windowCloseOnTouchOutside">false</item>
         <item name="android:colorAccent">#FFFFFF</item>

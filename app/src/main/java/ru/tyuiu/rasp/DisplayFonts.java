@@ -42,7 +42,7 @@ final class DisplayFonts {
         }
         try {
             var font = new Font.Builder(context.getResources(), R.font.handjet)
-                    .setFontVariationSettings("'wght' 620, 'ELSH' 8").build();
+                    .setFontVariationSettings("'wght' 500, 'ELSH' 8").build();
             dot = new Typeface.CustomFallbackBuilder(new FontFamily.Builder(font).build()).build();
         } catch (java.io.IOException invalid) {
             dot = context.getResources().getFont(R.font.handjet);
@@ -64,14 +64,26 @@ final class DisplayFonts {
     }
 
     static void time(TextView text, ThemePalette palette) {
-        if (palette == ThemePalette.MONO) text.setTypeface(dot(text.getContext()));
+        if (palette != ThemePalette.MONO) return;
+        if (displaySize(text)) text.setTypeface(dot(text.getContext()));
+        else {
+            text.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            text.setFontFeatureSettings("'tnum'");
+        }
     }
 
     static void heading(TextView text, ThemePalette palette) {
         if (palette == ThemePalette.PAPER) text.setTypeface(Typeface.SERIF, Typeface.BOLD);
-        if (palette == ThemePalette.MONO) {
+        if (palette == ThemePalette.MONO && displaySize(text)) {
             text.setTypeface(dot(text.getContext()));
             text.setText(text.getText().toString().toUpperCase(Schedule.RU));
+            text.setLetterSpacing(0.025f);
         }
+    }
+
+    private static boolean displaySize(TextView text) {
+        var metrics = text.getResources().getDisplayMetrics();
+        return text.getTextSize() >= android.util.TypedValue.applyDimension(
+                android.util.TypedValue.COMPLEX_UNIT_SP, 24, metrics);
     }
 }

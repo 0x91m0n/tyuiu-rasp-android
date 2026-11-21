@@ -15,7 +15,7 @@ import android.util.SizeF;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ProgressBar;
-import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.TextView;
 
 import java.time.Instant;
@@ -265,6 +265,7 @@ public final class ScheduleSmoke extends Instrumentation {
     private static void checkDottedHeading(Context context) {
         var title = new TextView(context);
         title.setText("Пары ТИУ");
+        title.setTextSize(29);
         DisplayFonts.heading(title, ThemePalette.MONO);
         String heading = title.getText().toString().replace(" ", "");
         var glyphs = android.graphics.text.TextRunShaper.shapeTextRun(heading, 0, heading.length(), 0, heading.length(),
@@ -291,56 +292,79 @@ public final class ScheduleSmoke extends Instrumentation {
                         "Практика", "504а / Корпус 1а", "Кузнецова Ирина Юрьевна", "1")), false);
         int fields = WidgetOptions.TIME | WidgetOptions.ROOM | WidgetOptions.TYPE | WidgetOptions.TEACHER
                 | WidgetOptions.GAPS | WidgetOptions.HEADER | WidgetOptions.GROUP;
-        var options = new WidgetOptions(Widgets.Kind.DAY, "1", "dark", 100, 0, 0, false, fields, "");
+        var options = new WidgetOptions(Widgets.Kind.DAY, "1", "dark", 100, 0, false, fields, "");
         runOnMainSync(() -> {
             var full = new SizeF(250, 250);
             var remote = Widgets.make(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, full);
-            View widget = remote.apply(context, null);
+            View widget = mountWidget(context, remote);
             layout(widget, context, full);
-            LinearLayout rows = widget.findViewById(R.id.widget_schedule_rows);
-            require(rows.getChildCount() == 3, "Two classes and a separate gap");
-            View first = rows.getChildAt(0);
+            ListView rows = widget.findViewById(R.id.widget_schedule_rows);
+            require(rows.getCount() == 3, "Two classes and a separate gap");
+            View first = rows.getAdapter().getView(0, null, rows);
             var time = (TextView) first.findViewById(R.id.widget_row_time);
             var subject = (TextView) first.findViewById(R.id.widget_row_subject);
             require(time.getText().toString().equals("13:45") && subject.getText().toString().startsWith("Основы"),
                     "Time and subject have independent text views");
             require(hasText(first, "315 / Корпус 2 · Практика") && hasText(first, "Смирнова А. В."),
                     "Optional metadata and teacher are on separate lines");
-            require(hasText(rows.getChildAt(1), "Окно · 115 мин") && hasText(rows.getChildAt(2), "Проектная деятельность"),
-                    "Gap belongs to the next visible class");
+            require(hasText(rows.getAdapter().getView(1, null, rows), "Окно · 115 мин")
+                    && hasText(rows.getAdapter().getView(2, null, rows), "Проектная деятельность"),
+                    "Gap belongs to the next class");
             require(rows.getBottom() <= widget.getHeight() - widget.getPaddingBottom(), "Roomy agenda fits");
             remote.reapply(context, widget);
-            require(rows.getChildCount() == 3, "Reapplying the widget does not duplicate rows");
+            require(rows.getCount() == 3, "Reapplying the widget does not duplicate rows");
 
             var small = new SizeF(160, 133);
-            View compact = Widgets.make(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, small)
-                    .apply(context, null);
+            View compact = mountWidget(context,
+                    Widgets.make(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, small));
             layout(compact, context, small);
-            LinearLayout shortRows = compact.findViewById(R.id.widget_schedule_rows);
-            require(hasText(compact, "13:45") && hasText(compact, "Ещё 1") && !hasText(compact, "Окно · 115 мин"),
-                    "Short widgets keep the first class and skip orphaned gaps");
+            ListView shortRows = compact.findViewById(R.id.widget_schedule_rows);
+            require(hasText(compact, "13:45") && shortRows.getCount() == 3 && shortRows.canScrollVertically(1),
+                    "Short widgets show the first class and keep the rest scrollable");
+            shortRows.setSelection(shortRows.getCount() - 1);
+            layout(compact, context, small);
+            require(hasText(compact, "Проектная деятельность"), "Scrolling reaches the last class");
             require(shortRows.getBottom() <= compact.getHeight() - compact.getPaddingBottom(), "Compact agenda fits");
+
+            var weeklyOptions = WidgetOptions.decode("{\"lines\":2}", Widgets.Kind.WEEK);
+            var weekly = new java.util.ArrayList<Schedule.Lesson>();
+            for (int offset = 0; offset < 7; offset++) {
+                for (var lesson : schedule.lessons) {
+                    weekly.add(new Schedule.Lesson(lesson.start().plusDays(offset), lesson.end().plusDays(offset),
+                            lesson.title() + " " + (offset + 1), lesson.type(), lesson.room(), lesson.teacher(), lesson.subgroup()));
+                }
+            }
+            var week = new Schedule(schedule.group, schedule.source, weekly, false);
+            View weeklyWidget = mountWidget(context, Widgets.make(context, store, week, now,
+                    AppWidgetManager.INVALID_APPWIDGET_ID, weeklyOptions, small));
+            layout(weeklyWidget, context, small);
+            ListView weeklyRows = weeklyWidget.findViewById(R.id.widget_schedule_rows);
+            require(weeklyRows.getCount() == 21, "Weekly agenda contains all 14 classes and 7 day headings despite the old cap");
+            weeklyRows.setSelection(weeklyRows.getCount() - 1);
+            layout(weeklyWidget, context, small);
+            require(hasText(weeklyWidget, "Проектная деятельность 7"), "Scrolling reaches the last class of the week");
 
             var hostOptions = new Bundle();
             hostOptions.putParcelableArrayList(AppWidgetManager.OPTION_APPWIDGET_SIZES, new java.util.ArrayList<>(List.of(small, full)));
             var sizes = Widgets.sizes(hostOptions, Widgets.Kind.DAY);
             require(sizes.equals(List.of(small, full)), "Both launcher sizes are passed to the renderer");
-            View responsive = Widgets.renderSizes(context, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, sizes)
-                    .apply(context, null);
+            View responsive = mountWidget(context, Widgets.renderSizes(context, store, schedule, now,
+                    AppWidgetManager.INVALID_APPWIDGET_ID, options, sizes));
+            layout(responsive, context, small);
             require(hasText(responsive, "13:45"), "Responsive widget can inflate");
 
             var largeFont = new android.content.res.Configuration(context.getResources().getConfiguration());
             largeFont.fontScale = 1.35f;
             Context scaled = context.createConfigurationContext(largeFont);
-            View scaledWidget = Widgets.make(scaled, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, small)
-                    .apply(scaled, null);
+            View scaledWidget = mountWidget(scaled,
+                    Widgets.make(scaled, store, schedule, now, AppWidgetManager.INVALID_APPWIDGET_ID, options, small));
             layout(scaledWidget, scaled, small);
             View scaledRows = scaledWidget.findViewById(R.id.widget_schedule_rows);
             require(hasText(scaledWidget, "13:45")
                     && scaledRows.getBottom() <= scaledWidget.getHeight() - scaledWidget.getPaddingBottom(),
                     "Small widget fits with large system text");
 
-            var progressOptions = new WidgetOptions(Widgets.Kind.PROGRESS, "1", "dark", 100, 0, 0,
+            var progressOptions = new WidgetOptions(Widgets.Kind.PROGRESS, "1", "dark", 100, 0,
                     false, fields | WidgetOptions.COUNTDOWN, "");
             var progressSize = new SizeF(145, 85);
             var during = day.atTime(14, 0).atZone(Schedule.ZONE).toInstant();
@@ -354,6 +378,13 @@ public final class ScheduleSmoke extends Instrumentation {
                     && progress.getBottom() <= progressWidget.getHeight() - progressWidget.getPaddingBottom(),
                     "Countdown and progress bar fit in the compact widget");
         });
+    }
+
+    private static View mountWidget(Context context, android.widget.RemoteViews remote) {
+        var host = new AppWidgetHostView(context);
+        View widget = remote.apply(context, host);
+        host.addView(widget);
+        return widget;
     }
 
     private static void layout(View view, Context context, SizeF size) {
@@ -374,9 +405,9 @@ public final class ScheduleSmoke extends Instrumentation {
             var provider = new ComponentName(context, NextWidget.class);
             require(widgets.bindAppWidgetIdIfAllowed(one, provider) && widgets.bindAppWidgetIdIfAllowed(two, provider),
                     "Bind two independent widget instances");
-            WidgetOptions.save(context, one, new WidgetOptions(Widgets.Kind.NEXT, "1", "mono", 60, 1, 3, true,
+            WidgetOptions.save(context, one, new WidgetOptions(Widgets.Kind.NEXT, "1", "mono", 60, 1, true,
                     WidgetOptions.HEADER | WidgetOptions.ROOM | WidgetOptions.COUNTDOWN, "Моя пара"));
-            WidgetOptions.save(context, two, new WidgetOptions(Widgets.Kind.NEXT, "2", "light", 100, -1, 2, false,
+            WidgetOptions.save(context, two, new WidgetOptions(Widgets.Kind.NEXT, "2", "light", 100, -1, false,
                     WidgetOptions.HEADER | WidgetOptions.TIME, "Вторая подгруппа"));
             Widgets.updateAll(context, store, schedule, Instant.now());
             var left = new java.util.concurrent.atomic.AtomicReference<AppWidgetHostView>();

@@ -2,6 +2,7 @@ package ru.tyuiu.rasp;
 
 import android.app.Activity;
 import android.appwidget.AppWidgetManager;
+import android.appwidget.AppWidgetHostView;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
@@ -35,7 +36,6 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 public final class WidgetConfigurationActivity extends Activity {
-    private static final int[] ROWS = {0, 2, 4, 6, 8};
     private final LinkedHashMap<Integer, CheckBox> checks = new LinkedHashMap<>();
     private ScheduleStore store;
     private ThemePalette palette;
@@ -43,7 +43,7 @@ public final class WidgetConfigurationActivity extends Activity {
     private SizeF previewSize;
     private List<String> subgroups;
     private final List<String> themes = new ArrayList<>();
-    private Spinner mode, subgroup, theme, textSize, lines;
+    private Spinner mode, subgroup, theme, textSize;
     private CheckBox compact;
     private EditText title;
     private SeekBar opacity;
@@ -109,7 +109,7 @@ public final class WidgetConfigurationActivity extends Activity {
         setContentView(root);
         add(label("Настройка виджета", 27, true), 0);
         add(label("Предпросмотр", 14, true), 14);
-        preview = new FrameLayout(this);
+        preview = new AppWidgetHostView(this);
         preview.setBackground(shape(palette.control));
         var frame = new LinearLayout.LayoutParams(dp(previewSize.getWidth()), dp(previewSize.getHeight()));
         frame.gravity = Gravity.CENTER_HORIZONTAL;
@@ -138,9 +138,6 @@ public final class WidgetConfigurationActivity extends Activity {
         themeNames.addAll(java.util.Arrays.asList(ThemePalette.LABELS));
         theme = picker("Тема виджета", themeNames, Math.max(0, themes.indexOf(initial.theme())));
         textSize = picker("Размер текста", List.of("Мелкий", "Обычный", "Крупный"), initial.textSize() + 1);
-        int rowChoice = 0;
-        for (int i = 0; i < ROWS.length; i++) if (ROWS[i] == initial.lines()) rowChoice = i;
-        lines = picker("Записей в виджете", List.of("По размеру виджета", "До 2", "До 4", "До 6", "До 8"), rowChoice);
         opacityTitle = label("", 15, false);
         add(opacityTitle, 9);
         opacity = new SeekBar(this);
@@ -182,7 +179,7 @@ public final class WidgetConfigurationActivity extends Activity {
         return new WidgetOptions(Widgets.Kind.values()[mode.getSelectedItemPosition()],
                 subgroups.get(subgroup.getSelectedItemPosition()), themes.get(theme.getSelectedItemPosition()),
                 opacity.getProgress(), textSize.getSelectedItemPosition() - 1,
-                ROWS[lines.getSelectedItemPosition()], compact.isChecked(), fields, title.getText().toString().trim());
+                compact.isChecked(), fields, title.getText().toString().trim());
     }
 
     private void refresh() {
@@ -212,7 +209,7 @@ public final class WidgetConfigurationActivity extends Activity {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) { refresh(); }
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         };
-        for (Spinner picker : List.of(mode, subgroup, theme, textSize, lines)) picker.setOnItemSelectedListener(changes);
+        for (Spinner picker : List.of(mode, subgroup, theme, textSize)) picker.setOnItemSelectedListener(changes);
         compact.setOnCheckedChangeListener((button, checked) -> refresh());
         for (var check : checks.values()) check.setOnCheckedChangeListener((button, checked) -> refresh());
         opacity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {

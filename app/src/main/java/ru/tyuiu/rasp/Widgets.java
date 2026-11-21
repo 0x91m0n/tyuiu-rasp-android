@@ -41,6 +41,8 @@ final class Widgets {
             this.size = new SizeF(width, height);
         }
 
+        boolean agenda() { return this != NEXT && this != PROGRESS; }
+
         static List<Kind> providers() {
             return java.util.Arrays.stream(values()).filter(kind -> kind.provider != null).collect(Collectors.toList());
         }
@@ -108,6 +110,11 @@ final class Widgets {
     static RemoteViews renderSizes(Context context, ScheduleStore store, Schedule schedule, Instant now,
                                    int id, WidgetOptions options, List<SizeF> sizes) {
         if (sizes.size() == 1) return make(context, store, schedule, now, id, options, sizes.get(0));
+        if (options.kind().agenda()) {
+            // The list fills its viewport at any size. Send the entries once to the launcher.
+            SizeF smallest = sizes.stream().min(java.util.Comparator.comparingDouble(SizeF::getHeight)).orElseThrow();
+            return make(context, store, schedule, now, id, options, smallest);
+        }
         var layouts = new LinkedHashMap<SizeF, RemoteViews>();
         for (SizeF size : sizes) layouts.put(size, make(context, store, schedule, now, id, options, size));
         return new RemoteViews(layouts);
@@ -150,7 +157,8 @@ final class Widgets {
             case WEEK -> "БЛИЖАЙШИЕ 7 ДНЕЙ";
             case PROGRESS -> "ПРОГРЕСС ПАРЫ";
         };
-        boolean agenda = kind != Kind.NEXT && kind != Kind.PROGRESS;
+        boolean agenda = kind.agenda();
+        view.setViewVisibility(R.id.widget_schedule_rows, agenda && !schedule.group.isEmpty() ? View.VISIBLE : View.GONE);
         view.setInt(R.id.widget_title, "setMaxLines", agenda || small ? 1 : 2);
         String title = "Выберите группу";
         String timing = "";
@@ -209,7 +217,7 @@ final class Widgets {
         optionalText(view, R.id.widget_teacher, WidgetAgenda.shortTeacher(teacher), 11 + font, palette.muted);
         if (!teacher.isEmpty()) view.setContentDescription(R.id.widget_teacher, teacher);
         if (agenda && !schedule.group.isEmpty()) {
-            WidgetAgenda.show(context, view, options, palette, schedule, target, subgroup, size);
+            WidgetAgenda.show(context, view, options, palette, schedule, target, subgroup, size, id);
         } else if (!agenda && !schedule.group.isEmpty()) {
             fitSingleLesson(context, view, size);
         }

@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.StatusBarManager;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Handler;
@@ -15,11 +16,13 @@ import com.nothing.ketchum.Common;
 import com.nothing.ketchum.Glyph;
 import com.nothing.ketchum.GlyphManager;
 
+import java.lang.ref.WeakReference;
 import java.util.function.Consumer;
 
 final class GlyphProgress {
     private static final String TAG = "PairsGlyph";
     private static final int SEGMENTS = 20;
+    private static WeakReference<GlyphProgress> owner = new WeakReference<>(null);
     private final Context context;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable timeout = () -> fail(GlyphCheck.NO_SERVICE);
@@ -41,6 +44,15 @@ final class GlyphProgress {
     GlyphProgress(Context context) { this.context = context; }
 
     static boolean supported() { return Build.VERSION.SDK_INT >= 34 && Common.is24111(); }
+    static boolean tileRunning() { return GlyphClassService.running(); }
+
+    static void openWindow(Activity activity) {
+        if (tileRunning()) {
+            Toast.makeText(activity, "Сначала останови Glyph в шторке", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        activity.startActivity(new Intent(activity, GlyphSessionActivity.class));
+    }
 
     static void requestTile(Activity activity) {
         var statusBar = activity.getSystemService(StatusBarManager.class);
@@ -89,6 +101,9 @@ final class GlyphProgress {
 
     private void connect() {
         try {
+            GlyphProgress current = owner.get();
+            if (current != null && current != this) current.stop();
+            owner = new WeakReference<>(this);
             GlyphManager active = GlyphManager.getInstance(context);
             manager = active;
             handler.postDelayed(timeout, 4_000);
@@ -143,7 +158,8 @@ final class GlyphProgress {
                 for (int channel = 0; channel < count; channel++) {
                     frame.buildChannel(frameState.reverse() ? SEGMENTS - 1 - channel : channel, level);
                 }
-                manager.toggle(frame.build());
+                if (context instanceof GlyphClassService) manager.setFrameColors(frame.build().getChannel());
+                else manager.toggle(frame.build());
                 previous = frameState;
                 if (firstFrame && progressStatus != null) progressStatus.accept(GlyphCheck.LIT);
             }
@@ -176,6 +192,7 @@ final class GlyphProgress {
     private void release() {
         handler.removeCallbacks(timeout);
         handler.removeCallbacks(animate);
+        if (owner.get() == this) owner.clear();
         GlyphManager active = manager;
         manager = null;
         connected = false;

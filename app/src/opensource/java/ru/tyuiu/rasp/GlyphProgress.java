@@ -8,8 +8,10 @@ final class GlyphProgress {
     GlyphProgress(Context context) {}
 
     static boolean supported() { return false; }
+    static boolean tileRunning() { return false; }
 
     static void requestTile(Activity activity) {}
+    static void openWindow(Activity activity) {}
 
     void show(int percent, GlyphOptions options) {}
 

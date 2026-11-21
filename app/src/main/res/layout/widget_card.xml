@@ -24,9 +24,11 @@
     <TextView android:id="@+id/widget_teacher"
         android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="2dp"
         android:maxLines="1" android:ellipsize="end" android:visibility="gone" />
-    <LinearLayout android:id="@+id/widget_schedule_rows"
-        android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="5dp"
-        android:orientation="vertical" android:visibility="gone" />
+    <ListView android:id="@+id/widget_schedule_rows"
+        android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:layout_marginTop="4dp" android:scrollbars="vertical" android:fadeScrollbars="false"
+        android:scrollbarStyle="insideOverlay" android:divider="@null" android:visibility="gone"
+        android:contentDescription="@string/widget_scrollable_schedule" />
     <ProgressBar android:id="@+id/widget_progress" style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent" android:layout_height="8dp" android:layout_marginTop="4dp"
         android:visibility="gone" />
