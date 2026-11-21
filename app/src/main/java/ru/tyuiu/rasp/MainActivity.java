@@ -244,9 +244,15 @@ public final class MainActivity extends Activity {
         }
         add(page, groupRow, 12);
         addFavorites(visible.feed());
-        var links = row();
-        links.addView(button("Важные ссылки", false, this::importantLinks));
-        add(page, links, 8);
+        var shortcutsPanel = row();
+        shortcutsPanel.setBaselineAligned(false);
+        shortcutsPanel.addView(button("Важные ссылки", false, () -> openFromSchedule("links")),
+                new LinearLayout.LayoutParams(0, -1, 1));
+        var vaultWidth = new LinearLayout.LayoutParams(0, -1, 1);
+        vaultWidth.setMarginStart(dp(8));
+        shortcutsPanel.addView(button("Логин и пароль", false, () ->
+                startActivity(new Intent(this, CredentialVaultActivity.class))), vaultWidth);
+        add(page, shortcutsPanel, 8);
         if (otherGroup != null) {
             var useGroup = button("Сделать моей группой", false, () -> useAsPersonal(visible));
             add(page, useGroup, 8);
@@ -691,9 +697,13 @@ public final class MainActivity extends Activity {
     }
 
     private void settings() {
+        openFromSchedule("settings");
+    }
+
+    private void openFromSchedule(String section) {
         agendaScroll = scroll.getScrollY();
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(0, settingsBack);
-        openSettingsPage("settings");
+        openSettingsPage(section);
     }
 
     private void openSettingsPage(String value) {
@@ -702,7 +712,7 @@ public final class MainActivity extends Activity {
     }
 
     private void backFromSettings() {
-        if (!"settings".equals(settingsPage)) {
+        if (!"settings".equals(settingsPage) && !"links".equals(settingsPage)) {
             boolean stopPreview = "glyph".equals(settingsPage) && glyphTesting;
             openSettingsPage("settings");
             if (stopPreview) glyph.stop();
@@ -730,6 +740,7 @@ public final class MainActivity extends Activity {
             case "data" -> "Данные расписания";
             case "themes" -> "Оформление";
             case "glyph" -> "Glyph Interface";
+            case "links" -> "Важные ссылки";
             default -> "Настройки";
         };
         var top = row();
@@ -746,6 +757,7 @@ public final class MainActivity extends Activity {
 
         Schedule schedule = store.read();
         switch (settingsPage) {
+            case "links" -> importantLinks();
             case "widgets" -> {
                 var controls = settingsCard();
                 setting(controls, "Добавить виджет", "Выбор стартового формата", this::pinWidget);
@@ -1151,11 +1163,11 @@ public final class MainActivity extends Activity {
     private void importantLinks() {
         String feed = currentGroup().feed();
         String timetable = feed.startsWith(OFFICIAL + "schedule/group/") ? feed : OFFICIAL;
-        String[] names = {"Эдукон", "Мой ТИУ", "Расписание ТИУ", "Электронная библиотека"};
-        String[] urls = {"https://educon2.tyuiu.ru/", "https://my.tyuiu.ru/", timetable, "https://jirbis.tyuiu.ru/"};
-        new AlertDialog.Builder(this).setTitle("Важные ссылки")
-                .setItems(names, (dialog, which) -> openLink(urls[which]))
-                .setNegativeButton("Закрыть", null).show();
+        var links = settingsCard();
+        setting(links, "Эдукон", "Учебные материалы и задания", () -> openLink("https://educon2.tyuiu.ru/"));
+        setting(links, "Мой ТИУ", "Личный кабинет", () -> openLink("https://my.tyuiu.ru/"));
+        setting(links, "Расписание ТИУ", "", () -> openLink(timetable));
+        setting(links, "Электронная библиотека", "", () -> openLink("https://jirbis.tyuiu.ru/"));
     }
 
     private <T> void work(java.util.concurrent.Callable<T> task, java.util.function.Consumer<T> result) {
