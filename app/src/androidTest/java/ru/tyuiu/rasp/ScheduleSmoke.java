@@ -31,11 +31,13 @@ import java.util.List;
 public final class ScheduleSmoke extends Instrumentation {
     private boolean officialNetwork;
     private boolean ringAlarm;
+    private boolean gradeAutoload;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         officialNetwork = "true".equals(arguments.getString("official"));
         ringAlarm = "true".equals(arguments.getString("weekAlarm"));
+        gradeAutoload = "true".equals(arguments.getString("gradeAutoload"));
         start();
     }
 
@@ -55,6 +57,16 @@ public final class ScheduleSmoke extends Instrumentation {
             require(schedule.lessons.equals(Schedule.parse(schedule.json().toString()).lessons),
                     "JSON round trip");
             require(schedule.day(start.toLocalDate(), "2").isEmpty(), "Subgroup filtering");
+            Instant end = lesson.ends();
+            require(Schedule.gapLabel(end, end.plus(10, ChronoUnit.MINUTES)).isEmpty()
+                            && Schedule.gapLabel(end, end.plus(39, ChronoUnit.MINUTES)).isEmpty(),
+                    "Ordinary breaks are hidden");
+            require(Schedule.gapLabel(end, end.plus(40, ChronoUnit.MINUTES)).equals("Окно · 40 мин")
+                            && Schedule.gapLabel(end, end.plus(60, ChronoUnit.MINUTES)).equals("Окно · 1 час")
+                            && Schedule.gapLabel(end, end.plus(90, ChronoUnit.MINUTES)).equals("Окно · 1 час 30 минут")
+                            && Schedule.gapLabel(end, end.plus(120, ChronoUnit.MINUTES)).equals("Окно · 2 часа")
+                            && Schedule.gapLabel(end, end.plus(121, ChronoUnit.MINUTES)).equals("Окно · 2 часа 1 минута"),
+                    "Long gaps show hours with the appropriate Russian forms");
             var evening = LocalDateTime.of(2026, 11, 20, 18, 0);
             var later = new Schedule.Lesson(evening, evening.plusMinutes(80), "Вечерняя", "", "", "", "2");
             var timed = new Schedule("ПРОВЕРКА-2", "Проверка", List.of(later), false);
@@ -141,7 +153,8 @@ public final class ScheduleSmoke extends Instrumentation {
                     "Reminder delivery and deduplication");
             notifications.cancel(lesson.key(), 1);
             checkFavorites(screen, store, withGap, lesson, other);
-            checkPortalLogin(context);
+            checkRecordBook();
+            if (gradeAutoload) checkAutomaticGrades(context);
             runOnMainSync(() -> checkDottedHeading(context));
 
             AppWidgetManager widgets = context.getSystemService(AppWidgetManager.class);
@@ -234,67 +247,105 @@ public final class ScheduleSmoke extends Instrumentation {
         finish(status, result);
     }
 
-    private void checkPortalLogin(Context context) throws Exception {
-        String form = "https://sso.tyuiu.ru/realms/master/protocol/openid-connect/auth";
-        String action = "https://sso.tyuiu.ru/realms/master/login-actions/authenticate";
-        String lookalike = form.replace("sso.tyuiu.ru", "sso.tyuiu.ru.example.test");
-        require(TiuPortal.loginForm(android.net.Uri.parse(form)) && !TiuPortal.loginForm(android.net.Uri.parse(lookalike)),
-                "Vault credentials are restricted to the public TIU sign-in form");
-        require(!TiuPortal.portalOrigin(android.net.Uri.parse("https://evil.test@sso.tyuiu.ru/"))
-                && !TiuPortal.portalOrigin(android.net.Uri.parse("https://sso.tyuiu.ru:8443/"))
-                && !TiuPortal.portalOrigin(android.net.Uri.parse("http://sso.tyuiu.ru/")),
-                "Portal refuses user info, insecure transport and unexpected ports");
+    private static void checkRecordBook() throws Exception {
+        var loginPage = java.net.URI.create("https://sso.tyuiu.ru/realms/master/protocol/openid-connect/auth");
+        String action = "/realms/master/login-actions/authenticate?session_code=test&amp;tab_id=tab";
+        String html = String.format(java.util.Locale.ROOT, """
+                <form method="post" action="%s">
+                  <input name="credentialId" type="hidden" value="test">
+                  <input id="username" name="username" type="hidden">
+                  <input id="email" name="email" type="text">
+                  <select id="domainSelect"><option value="@std.tyuiu.ru" selected>@std.tyuiu.ru</option></select>
+                  <input id="password" name="password" type="password">
+                  <input name="rememberMe" type="checkbox" checked>
+                  <button name="login" type="submit">Войти</button>
+                </form>
+                """, action);
+        var entry = new CredentialVault.Entry("student", "проверка + &");
+        var form = TiuRecordBook.loginForm(html, loginPage, entry);
+        require("session_code=test&tab_id=tab".equals(form.action().getRawQuery()), "Keep the issued SSO form target");
+        String data = java.net.URLDecoder.decode(new String(form.body(), java.nio.charset.StandardCharsets.UTF_8),
+                java.nio.charset.StandardCharsets.UTF_8);
+        require(data.equals("credentialId=test&username=student@std.tyuiu.ru&email=student&password=проверка + &"),
+                "Use the official student domain, preserve form fields and never request a persistent login");
+        var employee = new CredentialVault.Entry("staff@tyuiu.ru", "check");
+        require(new String(TiuRecordBook.loginForm(html, loginPage, employee).body(), java.nio.charset.StandardCharsets.UTF_8)
+                        .contains("username=staff%40tyuiu.ru"), "A full corporate address uses its supplied domain");
+        for (String invalid : List.of("https://sso.tyuiu.ru.example.test", "https://user@sso.tyuiu.ru",
+                "https://sso.tyuiu.ru:8443", "http://sso.tyuiu.ru")) {
+            try {
+                TiuRecordBook.loginForm(html.replace(action, invalid + action), loginPage, entry);
+                throw new AssertionError("Refuse an untrusted credential destination");
+            } catch (TiuRecordBook.InteractiveLogin rejected) {
+                // The password is never encoded for a different destination.
+            }
+        }
 
-        var credential = new CredentialVault.Entry("test@example.test", "Один-\"-\\-два");
-        var expected = new org.json.JSONArray()
-                .put(true).put(credential.login()).put(credential.password()).toString();
-        require(expected.equals(runPortalFixture(context, form, action, credential)),
-                "Official login dispatches input and submits the exact credentials once");
-        var blocked = new org.json.JSONArray().put(false).put("").put("").toString();
-        require(blocked.equals(runPortalFixture(context, lookalike, action, credential)),
-                "Credential script also enforces the origin at execution time");
-        require(blocked.equals(runPortalFixture(context, form, "https://sso.tyuiu.ru.example.test/auth", credential)),
-                "Tampered form action leaves both fields empty");
+        String book = """
+                <div id="app" data-page='{"component":"Web/RecordBook/Index","props":{"records":{
+                  "1":{"group":"АРХ-26","status":"архивный","records":[]},
+                  "2":{"group":"ТЕСТ-26","status":"активный","records":{
+                    "Зимний семестр":[{"discipline":"Практика &amp; проект","exam":"зачёт",
+                      "mark":"Зачтено","points":0,"perform_date":"20.11.2026","tutor":null}],
+                    "Летний семестр":{"4":{"discipline":"Химия","points":"92.50"}}
+                  }}
+                }}}'></div>
+                """;
+        var books = TiuRecordBook.parse(book);
+        require(books.size() == 2 && books.get(0).group().equals("ТЕСТ-26") && books.get(1).semesters().isEmpty(),
+                "Show active books first and retain archived books");
+        var semesters = books.get(0).semesters();
+        var grade = semesters.get(0).grades().get(0);
+        require(semesters.size() == 2 && semesters.get(0).name().equals("Зимний семестр")
+                        && grade.subject().equals("Практика & проект") && grade.points().equals("0")
+                        && grade.mark().equals("Зачтено")
+                        && semesters.get(1).grades().get(0).points().equals("92.50"),
+                "Decode grade book data, including zero points, decimals and missing optional fields");
+        require(books.equals(TiuRecordBook.parseRecords(TiuRecordBook.recordsJson(books))),
+                "Keep grades and semester ordering in the local snapshot");
     }
 
-    @android.annotation.SuppressLint("SetJavaScriptEnabled")
-    private String runPortalFixture(Context context, String address, String action, CredentialVault.Entry credential)
-            throws InterruptedException {
-        var web = new java.util.concurrent.atomic.AtomicReference<android.webkit.WebView>();
-        var result = new java.util.concurrent.atomic.AtomicReference<String>();
-        var ready = new java.util.concurrent.CountDownLatch(1);
+    private void checkAutomaticGrades(Context context) throws Exception {
+        var access = new RecordBookAccess(context);
+        require(!access.enabled(), "The grade fixture needs an empty emulator");
+        Activity screen = null;
         try {
-            runOnMainSync(() -> {
-                var view = new android.webkit.WebView(context);
-                web.set(view);
-                view.getSettings().setJavaScriptEnabled(true);
-                view.getSettings().setBlockNetworkLoads(true);
-                view.setWebViewClient(new android.webkit.WebViewClient() {
-                    @Override public void onPageFinished(android.webkit.WebView loaded, String url) {
-                        String script = "(() => { const sent = " + TiuPortal.credentialScript(credential)
-                                + "; return [sent && window.submitted, username.value, password.value]; })()";
-                        loaded.evaluateJavascript(script, value -> {
-                            result.set(value);
-                            ready.countDown();
-                        });
-                    }
+            var entry = new CredentialVault.Entry("fixture@std.tyuiu.ru", "fixture");
+            access.enable(entry);
+            long ticket = access.generation();
+            require(entry.equals(access.entry(ticket)), "Read the autoload credential from an unlocked device");
+            var grade = new TiuRecordBook.Grade("Проверочная дисциплина", "зачёт", "Зачтено", "92", "");
+            var term = new TiuRecordBook.Semester("Проверочный семестр", List.of(grade));
+            var book = new TiuRecordBook.Book("ТЕСТ-26", true, List.of(term));
+            var snapshot = new RecordBookAccess.Snapshot(System.currentTimeMillis(), List.of(book));
+            access.remember(ticket, snapshot);
+            require(snapshot.equals(access.last(ticket)), "Read the encrypted grade snapshot");
+            screen = startActivitySync(CredentialVaultActivity.recordBookIntent(context)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            var gradeScreen = screen;
+            var visible = new java.util.concurrent.atomic.AtomicBoolean();
+            for (int attempt = 0; attempt < 30 && !visible.get(); attempt++) {
+                runOnMainSync(() -> {
+                    var root = gradeScreen.getWindow().getDecorView();
+                    visible.set(hasText(root, "Проверочная дисциплина") && hasText(root, "92"));
                 });
-                String html = String.format(java.util.Locale.ROOT, """
-                        <form method="post" action="%s" onsubmit="window.submitted = true; return false;">
-                          <input id="username" name="username" type="hidden">
-                          <input id="email" name="email" oninput="username.value = this.value">
-                          <input id="password" name="password" type="password" required>
-                          <button name="login" type="submit">Войти</button>
-                        </form>
-                        """, action);
-                view.loadDataWithBaseURL(address, html, "text/html", "UTF-8", null);
-            });
-            require(ready.await(10, java.util.concurrent.TimeUnit.SECONDS), "Local portal fixture finished");
-            return result.get();
+                if (!visible.get()) Thread.sleep(100);
+            }
+            require(visible.get(), "Open cached grades automatically without asking for biometric authorization");
+            access.disable();
+            require(!access.enabled(), "Disabling removes the autoload credential");
+            try {
+                access.remember(ticket, snapshot);
+                throw new AssertionError("A revoked request must not recreate the cache");
+            } catch (java.security.GeneralSecurityException revoked) {
+                // The old request can no longer store grades.
+            }
         } finally {
-            runOnMainSync(() -> {
-                if (web.get() != null) web.get().destroy();
-            });
+            if (screen != null) {
+                var opened = screen;
+                runOnMainSync(opened::finish);
+            }
+            access.disable();
         }
     }
 
@@ -390,7 +441,7 @@ public final class ScheduleSmoke extends Instrumentation {
                     "Time and subject have independent text views");
             require(hasText(first, "315 / Корпус 2 · Практика") && hasText(first, "Смирнова А. В."),
                     "Optional metadata and teacher are on separate lines");
-            require(hasText(rows.getAdapter().getView(1, null, rows), "Окно · 115 мин")
+            require(hasText(rows.getAdapter().getView(1, null, rows), "Окно · 1 час 55 минут")
                     && hasText(rows.getAdapter().getView(2, null, rows), "Проектная деятельность"),
                     "Gap belongs to the next class");
             require(rows.getBottom() <= widget.getHeight() - widget.getPaddingBottom(), "Roomy agenda fits");
@@ -408,6 +459,14 @@ public final class ScheduleSmoke extends Instrumentation {
             layout(compact, context, small);
             require(hasText(compact, "Проектная деятельность"), "Scrolling reaches the last class");
             require(shortRows.getBottom() <= compact.getHeight() - compact.getPaddingBottom(), "Compact agenda fits");
+
+            var adjacent = new Schedule.Lesson(day.atTime(15, 30), day.atTime(17, 5),
+                    "Следующая пара", "", "", "", "1");
+            var withBreak = new Schedule(schedule.group, "", List.of(schedule.lessons.get(0), adjacent), false);
+            View ordinary = mountWidget(context, Widgets.make(context, store, withBreak, now,
+                    AppWidgetManager.INVALID_APPWIDGET_ID, options, small));
+            var ordinaryRows = (ListView) ordinary.findViewById(R.id.widget_schedule_rows);
+            require(ordinaryRows.getCount() == 2, "An ordinary break adds no widget row");
 
             var weeklyOptions = WidgetOptions.decode("{\"lines\":2}", Widgets.Kind.WEEK);
             var weekly = new java.util.ArrayList<Schedule.Lesson>();

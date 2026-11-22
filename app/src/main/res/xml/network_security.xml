@@ -9,8 +9,6 @@
         <!-- Some Android 13 system images lack the public GlobalSign Root R46 used by TIU. -->
         <domain includeSubdomains="false">my.tyuiu.ru</domain>
         <domain includeSubdomains="false">sso.tyuiu.ru</domain>
-        <domain includeSubdomains="false">educon2.tyuiu.ru</domain>
-        <domain includeSubdomains="false">storage.tyuiu.ru</domain>
         <domain includeSubdomains="false">timetable.tyuiu.ru</domain>
         <trust-anchors>
             <certificates src="system" />

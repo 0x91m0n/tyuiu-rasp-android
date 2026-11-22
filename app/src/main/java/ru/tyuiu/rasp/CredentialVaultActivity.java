@@ -38,12 +38,18 @@ import android.widget.Toast;
 
 import javax.crypto.Cipher;
 import java.util.Arrays;
+import java.io.IOException;
+import java.security.GeneralSecurityException;
+import java.time.Instant;
+import java.time.format.DateTimeFormatter;
+import java.util.StringJoiner;
+import java.util.concurrent.FutureTask;
 import java.util.function.Consumer;
 
 public final class CredentialVaultActivity extends Activity {
     private static final int AUTHENTICATORS = BiometricManager.Authenticators.BIOMETRIC_STRONG
             | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
-    private static final String PORTAL_PAGE = "tiu_portal_page";
+    private static final String RECORD_BOOK = "tiu_record_book";
     private CredentialVault vault;
     private ThemePalette palette;
     private EditText login;
@@ -55,11 +61,15 @@ public final class CredentialVaultActivity extends Activity {
     private boolean secureScreen;
     private Runnable whenResumed;
     private long resumeBefore;
-    private TiuServices.Page portalPage;
-    private TiuPortal portal;
+    private boolean recordBook;
+    private RecordBookAccess gradeAccess;
+    private RecordBookAccess.Snapshot shownGrades;
+    private TextView gradeStatus;
+    private long gradeRequestId;
+    private FutureTask<Void> gradeRequest;
 
-    static Intent portalIntent(Context context, TiuServices.Page page) {
-        return new Intent(context, CredentialVaultActivity.class).putExtra(PORTAL_PAGE, page.name());
+    static Intent recordBookIntent(Context context) {
+        return new Intent(context, CredentialVaultActivity.class).putExtra(RECORD_BOOK, true);
     }
 
     @Override protected void onCreate(Bundle state) {
@@ -69,10 +79,10 @@ public final class CredentialVaultActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setDecorFitsSystemWindows(false);
         vault = new CredentialVault(this);
-        String requestedPage = getIntent().getStringExtra(PORTAL_PAGE);
-        if (requestedPage != null) portalPage = TiuServices.Page.valueOf(requestedPage);
+        recordBook = getIntent().getBooleanExtra(RECORD_BOOK, false);
+        if (recordBook) gradeAccess = new RecordBookAccess(this);
         locked("");
-        if (state == null && deviceSecure() && (portalPage == null || vault.exists())) {
+        if (state == null && deviceSecure() && !recordBook) {
             getWindow().getDecorView().post(this::unlock);
         }
     }
@@ -84,14 +94,12 @@ public final class CredentialVaultActivity extends Activity {
         Runnable pending = whenResumed;
         whenResumed = null;
         if (pending != null && SystemClock.elapsedRealtime() <= resumeBefore && !deviceLocked()) pending.run();
+        else if (recordBook && deviceSecure() && !deviceLocked() && gradeAccess.enabled()) loadGrades(false);
     }
 
     @Override protected void onPause() {
         resumed = false;
-        if (password != null || portal != null) {
-            closePortal();
-            locked("");
-        }
+        if (password != null || gradeRequest != null || shownGrades != null) locked("");
         super.onPause();
     }
 
@@ -104,7 +112,7 @@ public final class CredentialVaultActivity extends Activity {
         if (prompt != null) prompt.cancel();
         if (cleanup != null) cleanup.run();
         clearEditor();
-        closePortal();
+        cancelGradeRequest();
         super.onDestroy();
     }
 
@@ -116,17 +124,22 @@ public final class CredentialVaultActivity extends Activity {
         try {
             if (vault.exists()) {
                 var request = vault.readRequest();
-                String title = portalPage == null ? "Разблокировать хранилище" : "Подтвердить вход в ТИУ";
+                String title = recordBook ? "Включить автозагрузку зачётки" : "Разблокировать хранилище";
                 authenticate(title, request.cipher(), authorized -> visible(() -> {
                     try {
                         var entry = vault.read(request, authorized);
-                        if (portalPage != null) showPortal(entry);
-                        else editor(entry.login(), entry.password(), null);
+                        if (recordBook) {
+                            gradeAccess.enable(entry);
+                            locked("");
+                            loadGrades(false);
+                        } else {
+                            editor(entry.login(), entry.password(), null);
+                        }
                     } catch (Exception unavailable) {
                         locked("Не удалось открыть сохранённую запись", true);
                     }
                 }), null);
-            } else if (portalPage == null) {
+            } else if (!recordBook) {
                 authenticate("Открыть хранилище", vault.writeRequest(),
                         authorized -> visible(() -> editor("", "", authorized)), null);
             } else {
@@ -271,10 +284,12 @@ public final class CredentialVaultActivity extends Activity {
             getSystemService(InputMethodManager.class).hideSoftInputFromWindow(focus.getWindowToken(), 0);
         }
         clearEditor();
+        cancelGradeRequest();
+        shownGrades = null;
         var panel = page();
         secureScreen = deviceSecure();
-        if (portalPage != null) {
-            portalEntry(panel, status);
+        if (recordBook) {
+            recordBookEntry(panel, status);
             return;
         }
         String message = status;
@@ -292,17 +307,24 @@ public final class CredentialVaultActivity extends Activity {
         }
     }
 
-    private void portalEntry(LinearLayout panel, String status) {
-        boolean saved = vault.exists();
-        String message = status.isBlank() ? saved ? "После подтверждения данные из хранилища будут переданы на sso.tyuiu.ru."
-                : "Сохрани учётную запись ТИУ для автовхода." : status;
-        add(panel, text(message, 15, palette.muted), 0);
-        if (saved && secureScreen) {
-            add(panel, action("Войти сохранёнными данными", true, this::unlock), 14);
-        } else {
-            add(panel, action("Открыть хранилище", true, this::openVault), 14);
+    private void recordBookEntry(LinearLayout panel, String status) {
+        boolean enabled = gradeAccess.enabled();
+        if (status.isBlank()) {
+            if (!secureScreen) status = "Для зачётки нужна блокировка экрана Android.";
+            else if (enabled) status = "Загружаем зачётку…";
+            else if (vault.exists()) status = "Подтверди один раз, чтобы приложение могло автоматически входить в зачётку на разблокированном телефоне.";
+            else status = "Сохрани логин и пароль ТИУ, чтобы открыть зачётку.";
         }
-        add(panel, action("Открыть страницу ТИУ", false, () -> showPortal(null)), 7);
+        gradeStatus = text(status, 15, palette.muted);
+        gradeStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        add(panel, gradeStatus, 0);
+        if (!secureScreen) {
+            add(panel, action("Настройки блокировки", true,
+                    () -> startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS))), 12);
+        } else if (!enabled) {
+            if (vault.exists()) add(panel, action("Включить автозагрузку", true, this::unlock), 12);
+            else add(panel, action("Сохранить логин и пароль", true, this::openVault), 12);
+        }
     }
 
     private void openVault() {
@@ -310,54 +332,161 @@ public final class CredentialVaultActivity extends Activity {
         startActivity(new Intent(this, CredentialVaultActivity.class));
     }
 
-    private void showPortal(CredentialVault.Entry entry) {
-        var root = column();
-        root.setBackgroundColor(palette.background);
-        fitInsets(root);
-        var header = new LinearLayout(this);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(8), dp(5), dp(8), 0);
-        var back = action("‹", false, () -> {
-            if (portal != null && portal.canGoBack()) portal.goBack();
-            else finish();
+    private void recordBookOptions(View anchor) {
+        var menu = new android.widget.PopupMenu(this, anchor);
+        if (gradeAccess.enabled() && secureScreen) {
+            menu.getMenu().add("Обновить баллы").setOnMenuItemClickListener(item -> {
+                loadGrades(true);
+                return true;
+            });
+            menu.getMenu().add("Выключить автозагрузку").setOnMenuItemClickListener(item -> {
+                cancelGradeRequest();
+                try {
+                    gradeAccess.disable();
+                    locked("");
+                } catch (GeneralSecurityException | IOException failure) {
+                    locked("Не удалось выключить автозагрузку.");
+                }
+                return true;
+            });
+        }
+        if (vault.exists()) menu.getMenu().add("Логин и пароль").setOnMenuItemClickListener(item -> {
+            openVault();
+            return true;
         });
-        back.setContentDescription("Назад");
-        header.addView(back, new LinearLayout.LayoutParams(dp(48), -2));
-        var title = text(portalPage.title, 18, palette.text);
-        title.setPadding(dp(8), 0, dp(8), 0);
-        title.setAccessibilityHeading(true);
-        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        var browser = action("↗", false, () -> TiuServices.openTab(this, portalPage.url, palette));
-        browser.setContentDescription("Открыть в браузере");
-        header.addView(browser, new LinearLayout.LayoutParams(dp(48), -2));
-        add(root, header, 0);
-
-        var status = text("Открываю страницу ТИУ…", 13, palette.muted);
-        status.setPadding(dp(12), dp(5), dp(12), dp(5));
-        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        add(root, status, 1);
-        if (portalPage == TiuServices.Page.RECORD_BOOK) {
-            add(root, action("Найти зачётку", false, () -> {
-                if (portal != null) portal.findRecordBook(true);
-            }), 2);
-        }
-        try {
-            portal = new TiuPortal(this, portalPage, status::setText);
-            root.addView(portal, new LinearLayout.LayoutParams(-1, 0, 1));
-            setContentView(root);
-            portal.open(entry);
-        } catch (RuntimeException unavailable) {
-            closePortal();
-            var fallback = page();
-            add(fallback, text("Встроенный просмотр недоступен.", 15, palette.muted), 0);
-            add(fallback, action("Открыть в браузере", true, () -> TiuServices.openTab(this, portalPage.url, palette)), 12);
-        }
+        menu.getMenu().add("Открыть в браузере").setOnMenuItemClickListener(item -> {
+            TiuServices.openBrowser(this, TiuRecordBook.URL);
+            return true;
+        });
+        menu.show();
     }
 
-    private void closePortal() {
-        TiuPortal current = portal;
-        portal = null;
-        if (current != null) current.close();
+    private void loadGrades(boolean force) {
+        if (gradeRequest != null || !resumed || deviceLocked() || !gradeAccess.enabled()) return;
+        long requestId = ++gradeRequestId;
+        long ticket = gradeAccess.generation();
+        var request = new FutureTask<Void>(() -> {
+            RecordBookAccess.Snapshot cached = null;
+            try {
+                cached = gradeAccess.last(ticket);
+            } catch (GeneralSecurityException | IOException | org.json.JSONException unreadable) {
+                // A missing or unreadable snapshot can be replaced after the server replies.
+            }
+            if (cached != null) {
+                boolean fresh = !force && cached.fresh(System.currentTimeMillis());
+                gradeResult(requestId, ticket, cached, "", fresh);
+                if (fresh) return null;
+            }
+            try {
+                var books = TiuRecordBook.load(gradeAccess.entry(ticket));
+                var snapshot = new RecordBookAccess.Snapshot(System.currentTimeMillis(), books);
+                try {
+                    gradeAccess.remember(ticket, snapshot);
+                } catch (GeneralSecurityException | IOException | org.json.JSONException unavailable) {
+                    // The live result still applies while this screen and the sign-in are active.
+                }
+                gradeResult(requestId, ticket, snapshot, "", true);
+            } catch (TiuRecordBook.InteractiveLogin failure) {
+                gradeResult(requestId, ticket, null, "ТИУ не принял вход. Проверь логин и пароль.", true);
+            } catch (GeneralSecurityException unavailable) {
+                gradeResult(requestId, ticket, null, "Доступ к зачётке закрыт. Разблокируй телефон кодом или включи автозагрузку заново.", true);
+            } catch (org.json.JSONException changed) {
+                gradeResult(requestId, ticket, null, "Не удалось прочитать зачётку ТИУ.", true);
+            } catch (IOException unavailable) {
+                gradeResult(requestId, ticket, null, "Не удалось обновить баллы. Проверь подключение.", true);
+            }
+            return null;
+        });
+        gradeRequest = request;
+        new Thread(request, "tiu-record-book").start();
+    }
+
+    private void gradeResult(long requestId, long ticket, RecordBookAccess.Snapshot snapshot, String status, boolean done) {
+        getMainExecutor().execute(() -> {
+            if (requestId != gradeRequestId || gradeRequest == null || !resumed || deviceLocked()
+                    || ticket != gradeAccess.generation() || isFinishing() || isDestroyed()) return;
+            if (done) gradeRequest = null;
+            if (snapshot != null && (shownGrades == null || !shownGrades.books().equals(snapshot.books()))) {
+                showGrades(snapshot);
+            }
+            if (snapshot != null) shownGrades = snapshot;
+            if (shownGrades != null) {
+                String updated = DateTimeFormatter.ofPattern("d MMM, HH:mm", java.util.Locale.forLanguageTag("ru"))
+                        .format(Instant.ofEpochMilli(shownGrades.updatedAt()).atZone(Schedule.ZONE));
+                String updateText = "Обновлено " + updated;
+                gradeStatus.setText(status.isBlank() ? updateText : updateText + "\n" + status);
+            } else if (!status.isBlank()) {
+                gradeStatus.setText(status);
+            }
+        });
+    }
+
+    private void cancelGradeRequest() {
+        if (gradeRequest != null) gradeRequest.cancel(true);
+        gradeRequest = null;
+    }
+
+    private void showGrades(RecordBookAccess.Snapshot snapshot) {
+        var panel = page();
+        gradeStatus = text("", 13, palette.muted);
+        add(panel, gradeStatus, 0);
+        boolean hasGrades = false;
+        for (var book : snapshot.books()) {
+            if (book.semesters().isEmpty()) continue;
+            if (snapshot.books().size() > 1 && !book.group().isBlank()) {
+                add(panel, gradeHeading(book.group(), 20, palette.text), 18);
+            }
+            for (var semester : book.semesters()) {
+                if (semester.grades().isEmpty()) continue;
+                hasGrades = true;
+                add(panel, gradeHeading(semester.name(), 16, palette.text), 16);
+                for (var grade : semester.grades()) addGrade(panel, grade);
+            }
+        }
+        if (!hasGrades) add(panel, text("В зачётке пока нет записей.", 15, palette.muted), 12);
+    }
+
+    private TextView gradeHeading(String label, int size, int color) {
+        var heading = text(label, size, color);
+        heading.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        heading.setAccessibilityHeading(true);
+        return heading;
+    }
+
+    private void addGrade(LinearLayout panel, TiuRecordBook.Grade grade) {
+        var card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setBackground(shape(palette.background, 14));
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        var subject = column();
+        var title = text(grade.subject().isBlank() ? "Дисциплина" : grade.subject(), 16, palette.text);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        add(subject, title, 0);
+        if (!grade.mark().isBlank()) add(subject, text(grade.mark(), 14, palette.accent), 3);
+        var details = new StringJoiner(" · ");
+        if (!grade.exam().isBlank()) details.add(grade.exam());
+        if (!grade.date().isBlank()) details.add(grade.date());
+        if (grade.mark().isBlank() && grade.points().isBlank()) details.add("Оценки пока нет");
+        if (details.length() > 0) add(subject, text(details.toString(), 13, palette.muted), 3);
+        card.addView(subject, new LinearLayout.LayoutParams(0, -2, 1));
+        if (!grade.points().isBlank()) {
+            var score = column();
+            score.setGravity(Gravity.CENTER);
+            score.setMinimumWidth(dp(52));
+            score.setPadding(dp(7), dp(6), dp(7), dp(6));
+            score.setBackground(shape(palette.card, 10));
+            var value = text(grade.points(), 20, palette.accent);
+            value.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            value.setGravity(Gravity.CENTER);
+            add(score, value, 0);
+            var label = text("баллы", 11, palette.muted);
+            label.setGravity(Gravity.CENTER);
+            add(score, label, 0);
+            var width = new LinearLayout.LayoutParams(-2, -2);
+            width.setMarginStart(dp(10));
+            card.addView(score, width);
+        }
+        add(panel, card, 7);
     }
 
     private void editor(String user, String secret, Cipher authorized) {
@@ -434,13 +563,20 @@ public final class CredentialVaultActivity extends Activity {
         var back = action("‹", false, this::finish);
         back.setContentDescription("Назад");
         header.addView(back, new LinearLayout.LayoutParams(dp(48), -2));
-        var title = text(portalPage == null ? "Логин и пароль" : portalPage.title, 26, palette.text);
+        var title = text(recordBook ? "Зачётка" : "Логин и пароль", 26, palette.text);
         title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         title.setAccessibilityHeading(true);
         DisplayFonts.heading(title, palette);
         var heading = new LinearLayout.LayoutParams(0, -2, 1);
         heading.setMarginStart(dp(12));
         header.addView(title, heading);
+        if (recordBook) {
+            var options = action("⋮", false, null);
+            options.setTextSize(22);
+            options.setContentDescription("Действия с зачёткой");
+            options.setOnClickListener(this::recordBookOptions);
+            header.addView(options, new LinearLayout.LayoutParams(dp(48), -2));
+        }
         add(content, header, 0);
         var panel = column();
         panel.setBackground(shape(palette.card, 21));
@@ -472,7 +608,7 @@ public final class CredentialVaultActivity extends Activity {
         item.setMinHeight(dp(48));
         item.setBackground(new RippleDrawable(ColorStateList.valueOf(0x307f7f7f),
                 shape(primary ? palette.accent : palette.control, 14), null));
-        item.setOnClickListener(view -> run.run());
+        if (run != null) item.setOnClickListener(view -> run.run());
         return item;
     }
 

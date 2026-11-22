@@ -10,7 +10,6 @@ import android.util.TypedValue;
 import android.view.View;
 import android.widget.RemoteViews;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -63,8 +62,7 @@ final class WidgetAgenda {
         Instant previousEnd = null;
         for (var slot : Schedule.slots(lessons)) {
             var first = slot.get(0);
-            long minutes = previousEnd == null ? 0 : Duration.between(previousEnd, first.starts()).toMinutes();
-            String gap = minutes > 0 && options.has(WidgetOptions.GAPS) ? "Окно · " + minutes + " мин" : "";
+            String gap = options.has(WidgetOptions.GAPS) ? Schedule.gapLabel(previousEnd, first.starts()) : "";
             for (var lesson : slot) {
                 String detail = Widgets.join(" · ",
                         subgroup.isEmpty() && !lesson.subgroup().isBlank() ? "Подгр. " + lesson.subgroup() : "",
@@ -100,6 +98,7 @@ final class WidgetAgenda {
 
     private void place(RemoteViews widget, List<Entry> entries, SizeF size, int id, String subgroup) {
         int column = leadingWidth(entries, size);
+        int gapIndent = column == 0 || size.getWidth() < 200 ? 0 : column + px(8);
         boolean dense = options.compact() || size.getHeight() < 150;
         boolean clickable = id != AppWidgetManager.INVALID_APPWIDGET_ID;
         var items = new RemoteViews.RemoteCollectionItems.Builder().setViewTypeCount(2);
@@ -110,7 +109,7 @@ final class WidgetAgenda {
                 items.addItem(position++, link(note(entry.heading(), 0, palette.accent), R.id.widget_note, day));
             }
             if (!entry.gap().isEmpty()) {
-                items.addItem(position++, link(note(entry.gap(), column == 0 ? 0 : column + px(8), palette.muted),
+                items.addItem(position++, link(note(entry.gap(), gapIndent, palette.muted),
                         R.id.widget_note, day));
             }
             items.addItem(position++, link(row(entry, column, dense), R.id.widget_lesson_row, day));

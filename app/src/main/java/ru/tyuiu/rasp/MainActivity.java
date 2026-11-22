@@ -244,6 +244,10 @@ public final class MainActivity extends Activity {
         }
         add(page, groupRow, 12);
         addFavorites(visible.feed());
+        var gradesPanel = column();
+        gradesPanel.setBackground(shape(palette.card, 18));
+        setting(gradesPanel, "Зачётка", "", () -> startActivity(CredentialVaultActivity.recordBookIntent(this)));
+        add(page, gradesPanel, 10);
         var shortcutsPanel = row();
         shortcutsPanel.setBaselineAligned(false);
         shortcutsPanel.addView(button("Важные ссылки", false, () -> openFromSchedule("links")),
@@ -420,10 +424,8 @@ public final class MainActivity extends Activity {
         Instant previousEnd = null;
         for (List<Schedule.Lesson> lessonsAtTime : Schedule.slots(lessons)) {
             Schedule.Lesson first = lessonsAtTime.get(0);
-            if (previousEnd != null) {
-                long gap = ChronoUnit.MINUTES.between(previousEnd, first.starts());
-                if (gap > 0) add(page, label("Окно · " + gap + " мин", 13, palette.muted, false), 10);
-            }
+            String gap = Schedule.gapLabel(previousEnd, first.starts());
+            if (!gap.isEmpty()) add(page, label(gap, 13, palette.muted, false), 10);
             var slot = box(palette.card);
             slot.addView(label(first.time(), 14, palette.accent, true));
             for (Schedule.Lesson lesson : lessonsAtTime) {
@@ -1164,12 +1166,10 @@ public final class MainActivity extends Activity {
         String feed = currentGroup().feed();
         String timetable = feed.startsWith(OFFICIAL + "schedule/group/") ? feed : OFFICIAL;
         var links = settingsCard();
-        setting(links, "Электронная зачётка", "Баллы и оценки в «Мой ТИУ»",
-                () -> startActivity(CredentialVaultActivity.portalIntent(this, TiuServices.Page.RECORD_BOOK)));
         setting(links, "Мой ТИУ", "Личный кабинет",
-                () -> startActivity(CredentialVaultActivity.portalIntent(this, TiuServices.Page.ACCOUNT)));
+                () -> TiuServices.openBrowser(this, TiuServices.MY_TIU));
         setting(links, "Эдукон", "Учебные материалы и задания",
-                () -> startActivity(CredentialVaultActivity.portalIntent(this, TiuServices.Page.COURSES)));
+                () -> TiuServices.openBrowser(this, TiuServices.EDUCON));
         setting(links, "Расписание ТИУ", "", () -> openLink(timetable));
     }
 

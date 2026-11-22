@@ -12,8 +12,8 @@ android {
         applicationId = 'ru.tyuiu.rasp'
         minSdk = 33
         targetSdk = 36
-        versionCode = 12
-        versionName = '0.10.0'
+        versionCode = 15
+        versionName = '0.10.3'
         testInstrumentationRunner = 'ru.tyuiu.rasp.ScheduleSmoke'
         def catalog = providers.gradleProperty('scheduleCatalogUrl').getOrElse('')
         buildConfigField 'String', 'CATALOG_URL', '"' + catalog.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -38,6 +38,10 @@ androidComponents {
     beforeVariants(selector().all()) { variant ->
         if (!glyphEnabled && variant.flavorName == 'glyph') variant.enable = false
     }
+}
+
+dependencies {
+    implementation 'org.jsoup:jsoup:1.24.1'
 }
 
 if (glyphEnabled) {

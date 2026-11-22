@@ -100,6 +100,27 @@ final class Schedule {
         return new ArrayList<>(slots.values());
     }
 
+    static String gapLabel(Instant previousEnd, Instant nextStart) {
+        if (previousEnd == null) return "";
+        long minutes = Duration.between(previousEnd, nextStart).toMinutes();
+        if (minutes < 40) return "";
+        if (minutes < 60) return "Окно · " + minutes + " мин";
+        String hours = russianDurationPart(minutes / 60, "час", "часа", "часов");
+        long remainder = minutes % 60;
+        return "Окно · " + hours + (remainder == 0 ? ""
+                : " " + russianDurationPart(remainder, "минута", "минуты", "минут"));
+    }
+
+    private static String russianDurationPart(long count, String singular, String few, String many) {
+        long lastTwo = count % 100;
+        if (lastTwo >= 11 && lastTwo <= 14) return count + " " + many;
+        return count + " " + switch ((int) (count % 10)) {
+            case 1 -> singular;
+            case 2, 3, 4 -> few;
+            default -> many;
+        };
+    }
+
     static boolean matches(Lesson lesson, String subgroup) {
         if (subgroup.isBlank() || lesson.subgroup.isBlank()) return true;
         for (String part : lesson.subgroup.split("[,/;]")) {
